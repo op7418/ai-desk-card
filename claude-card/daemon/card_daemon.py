@@ -128,6 +128,75 @@ class SerialTransport(Transport):
     def connected(self): return True
 
 
+class WiFiTransport(Transport):
+    """v0.8 Wi-Fi transport: HTTP POST to the device's on-board server.
+    Frames go to POST /frame (raw 4bpp body + ?x=&y=&w=&h= for region);
+    commands go to POST /cmd (JSON body). Stateless — every push opens a
+    new connection. LAN throughput beats USB by orders of magnitude
+    (~250 KB frame in well under a second)."""
+
+    def __init__(self, ip: str, port: int = 9880):
+        self.ip = ip
+        self.port = port
+        self._connect_ok = True
+
+    def start(self, on_byte, on_connect=None):
+        # HTTP has no persistent connection to "start". Run the handshake
+        # callback once so the daemon's _handshake fires and any pending
+        # WIDGET_CACHE gets pushed.
+        if on_connect:
+            threading.Thread(target=on_connect, daemon=True).start()
+
+    def write(self, data: bytes):
+        # Line-based protocol → JSON command. Route to /cmd over HTTP.
+        try:
+            line = data.decode("utf-8").strip()
+            if not line.startswith("{"): return
+            obj = json.loads(line)
+        except Exception as e:
+            log(f"[wifi] write non-JSON: {e!r}"); return
+        if "cmd" not in obj: return        # status / time lines etc. skip
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"http://{self.ip}:{self.port}/cmd",
+                data=json.dumps(obj).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                _ = r.read()
+            self._connect_ok = True
+        except Exception as e:
+            log(f"[wifi] cmd {obj.get('cmd')!r}: {e!r}")
+            self._connect_ok = False
+
+    def push_frame_http(self, packed: bytes,
+                        region: "tuple | None") -> bool:
+        import urllib.request
+        url = f"http://{self.ip}:{self.port}/frame"
+        if region is not None:
+            x, y, w, h = region
+            url += f"?x={x}&y={y}&w={w}&h={h}"
+        try:
+            req = urllib.request.Request(
+                url, data=packed, method="POST",
+                headers={"Content-Type": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                ok = (r.status == 200)
+            self._connect_ok = ok
+            return ok
+        except Exception as e:
+            log(f"[wifi] frame: {e!r}")
+            self._connect_ok = False
+            return False
+
+    def connected(self) -> bool:
+        # Cheap reachability check — used by /pair-status. We avoid hitting
+        # the device every poll; only re-probe if the last operation
+        # flagged a failure.
+        return self._connect_ok
+
+
 class BLETransport(Transport):
     # When BLE is the active transport, slow the inter-line cadence so the
     # ESP32 BLE stack has time to deliver each write to the GATT callback
@@ -198,10 +267,19 @@ class BLETransport(Transport):
     # CoreBluetooth on macOS does NOT auto-fragment writeWithoutResponse
     # writes larger than the negotiated MTU — they silently get dropped.
     # The line-based frame_chunk JSON is ~2.7 KB per line, so we manually
-    # slice into MTU-3 byte payloads. Device's LineBuf reassembles by
+    # slice into sub-MTU byte payloads. Device's LineBuf reassembles by
     # accumulating until '\n', so as long as we don't insert newlines in
     # the middle the parser still sees one line.
-    _BLE_MTU = 182          # macOS typical ATT_MTU is 185 (data = MTU-3)
+    #
+    # v0.7: dropped 182 → 100. ATT_MTU is 185, but encrypted-bonded links
+    # add a 4-byte MIC; a payload near MTU may trigger "Long Write" on
+    # macOS' side, which becomes an ESP_GATTS_WRITE_EVT with is_prep=true
+    # on the firmware. Bluedroid's BLECharacteristic defers onWrite for
+    # prepared writes until ESP_GATTS_EXEC_WRITE_EVT — and macOS appears
+    # not to send Execute Write in some encrypted-write paths, so the
+    # callback never fires. Smaller payloads stay below the long-write
+    # threshold and stay is_prep=false.
+    _BLE_MTU = 100
 
     def write(self, data: bytes):
         client = self._client
@@ -255,10 +333,15 @@ def _telemetry_listener(line: str):
         return
     # Map firmware field names → DEVICE_TELEMETRY keys.
     mapping = {
-        "fw":          "firmware",
-        "mac":         "mac",
-        "battery_pct": "battery_pct",
-        "battery_mv":  "battery_mv",
+        "fw":              "firmware",
+        "mac":             "mac",
+        "battery_pct":     "battery_pct",
+        "battery_mv":      "battery_mv",
+        "on_usb":          "on_usb",
+        "wifi_connected":  "wifi_connected",
+        "wifi_ssid":       "wifi_ssid",
+        "wifi_ip":         "wifi_ip",
+        "wifi_rssi":       "wifi_rssi",
     }
     for src, dst in mapping.items():
         if src in obj:
@@ -350,11 +433,13 @@ def _crc32(data: bytes) -> int:
 
 
 def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
-    """Send a packed 4bpp frame via the chunked protocol.
+    """Send a packed 4bpp frame via the active transport.
 
     Full frame: packed = FRAME_BYTES, region = None.
     Region update: packed = w*h/2 bytes, region = (x, y, w, h).
 
+    For Wi-Fi (v0.8) we POST raw bytes in a single HTTP request — orders
+    of magnitude faster than the chunked-JSON protocol used by serial/BLE.
     Caller serialises (we hold _FRAME_LOCK)."""
     global _FRAME_ID
     if region is None and len(packed) != FRAME_BYTES:
@@ -365,6 +450,20 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
         if len(packed) != expected:
             log(f"[frame] WARN region size {len(packed)} != {expected} "
                 f"({w}x{h})")
+
+    # Wi-Fi short path: skip the chunked-base64 protocol entirely.
+    if isinstance(TRANSPORT, WiFiTransport):
+        with _FRAME_LOCK:
+            _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
+            fid = _FRAME_ID
+            t0 = time.time()
+            ok = TRANSPORT.push_frame_http(packed, region)
+            dt = time.time() - t0
+            kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
+            log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
+                f"{'ok' if ok else 'FAIL'}")
+        return
+
     with _FRAME_LOCK:
         _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
         fid = _FRAME_ID
@@ -451,6 +550,8 @@ def _settings_state() -> dict:
     state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
     state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
     state["ble_paired"] = False
+    # Pass through firmware's wifi_* fields if available (v0.8).
+    # Renderer reads wifi_connected / wifi_ssid / wifi_ip / wifi_rssi.
     return state
 
 
@@ -848,6 +949,18 @@ class CardHandler(BaseHTTPRequestHandler):
                 "note":         "port open, no ack within 2.5s — wrong firmware?",
             })
 
+        if path == "/provision-wifi":
+            # v0.8: forward Wi-Fi credentials to firmware via whatever
+            # transport is up (serial / BLE / Wi-Fi itself works too).
+            ssid = (payload.get("ssid") or "").strip()
+            pwd  = payload.get("password", "")
+            if not ssid:
+                return self._reply(400, {"error": "ssid required (use \"\" to forget)"})
+            send_line({"cmd": "wifi_set", "ssid": ssid, "password": pwd})
+            return self._reply(200, {"ok": True,
+                                     "note": "credentials sent to device; "
+                                             "watch ack:status for wifi_connected"})
+
         if path == "/touch":
             # Firmware v0.6.4: device sends {x, y} from touch panel; daemon
             # maps to a hot-zone action against the last rendered view.
@@ -918,6 +1031,36 @@ def tz_offset_seconds() -> int:
     return int((local - utc_dt).total_seconds())
 
 
+def discover_wifi_device(timeout_s: float = 3.0) -> "tuple|None":
+    """Return (ip, port) of a claude-card peer on the LAN via mDNS, or None."""
+    try:
+        from zeroconf import Zeroconf, ServiceBrowser
+    except ImportError:
+        log("[mdns] zeroconf not installed; skipping Wi-Fi discovery")
+        return None
+    found = []
+
+    class _Listener:
+        def add_service(self, zc, t, name):
+            info = zc.get_service_info(t, name, timeout=1500)
+            if not info or not info.addresses: return
+            ip = ".".join(str(b) for b in info.addresses[0])
+            found.append((ip, info.port))
+        def update_service(self, zc, t, name): pass
+        def remove_service(self, zc, t, name): pass
+
+    zc = Zeroconf()
+    try:
+        ServiceBrowser(zc, "_claude-card._tcp.local.", _Listener())
+        deadline = time.time() + timeout_s
+        while time.time() < deadline and not found:
+            time.sleep(0.2)
+    finally:
+        try: zc.close()
+        except Exception: pass
+    return found[0] if found else None
+
+
 def pick_transport(kind: str, port: str | None) -> Transport:
     if port:
         return SerialTransport(port)
@@ -927,10 +1070,22 @@ def pick_transport(kind: str, port: str | None) -> Transport:
         return SerialTransport(candidates[0])
     if kind == "ble":
         return BLETransport()
+    if kind == "wifi":
+        peer = discover_wifi_device(timeout_s=5.0)
+        if not peer: sys.exit("no _claude-card._tcp peer found on LAN")
+        ip, p = peer
+        log(f"[transport] using Wi-Fi {ip}:{p}")
+        return WiFiTransport(ip, p)
+    # kind == "auto": prefer Wi-Fi > USB > BLE
+    peer = discover_wifi_device(timeout_s=2.5)
+    if peer:
+        ip, p = peer
+        log(f"[transport] found Wi-Fi peer {ip}:{p}, using Wi-Fi")
+        return WiFiTransport(ip, p)
     if candidates:
-        log("[transport] found serial device, using USB")
+        log("[transport] no Wi-Fi peer; found serial device, using USB")
         return SerialTransport(candidates[0])
-    log("[transport] no serial, falling back to BLE")
+    log("[transport] no Wi-Fi, no serial; falling back to BLE")
     return BLETransport()
 
 
@@ -938,7 +1093,8 @@ def main():
     global TRANSPORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
-    ap.add_argument("--transport", choices=("auto", "serial", "ble"), default="auto")
+    ap.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"),
+                    default="auto")
     ap.add_argument("--http-port", type=int, default=9877)
     ap.add_argument("--owner", default=os.environ.get("USER", ""))
     args = ap.parse_args()

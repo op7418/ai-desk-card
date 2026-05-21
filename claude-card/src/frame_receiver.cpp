@@ -24,6 +24,10 @@ uint16_t g_region_h     = FRAME_H;
 // What we did last. Useful for the boot log.
 const char* g_last_state = "idle";
 
+// v0.8: simple busy-flag so http_server (Wi-Fi) and frameHandleCommand
+// (serial/BLE) don't both write to g_frame_buf simultaneously.
+volatile bool g_buf_busy = false;
+
 // Very small CRC32 (no table) — only for end-of-frame sanity. ~4 ms per
 // 260 KB frame, negligible. Could swap for the ESP32 hardware CRC unit if
 // we ever care about that overhead.
@@ -56,6 +60,31 @@ bool frameReceiverInit() {
 
 const char* frameReceiverStateName() { return g_last_state; }
 
+uint8_t* frameBuffer()      { return g_frame_buf; }
+size_t   frameBufferSize()  { return FRAME_BYTES_4BPP; }
+
+void frameDisplay(int x, int y, int w, int h) {
+    if (!g_frame_buf) return;
+    bool full = (x == 0 && y == 0 && w == FRAME_W && h == FRAME_H);
+    M5.EPD.WritePartGram4bpp(x, y, w, h, g_frame_buf);
+    if (full) {
+        M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+    } else {
+        M5.EPD.UpdateArea(x, y, w, h, UPDATE_MODE_GC16);
+    }
+    g_last_state = full ? "displayed" : "displayed-region";
+}
+
+bool frameAcquireBuffer() {
+    // Simple non-blocking try-lock. Single-core hot path so racing risk is
+    // small; an http upload thread vs the main-loop dispatch is the actual
+    // worry. If busy, caller should retry / reject.
+    if (g_buf_busy) return false;
+    g_buf_busy = true;
+    return true;
+}
+void frameReleaseBuffer() { g_buf_busy = false; }
+
 bool frameHandleCommand(JsonDocument& doc) {
     const char* cmd = doc["cmd"];
     if (!cmd) return false;
@@ -63,6 +92,10 @@ bool frameHandleCommand(JsonDocument& doc) {
     if (strcmp(cmd, "frame_begin") == 0) {
         if (!g_frame_buf) {
             Serial.println("[frame] begin without buf");
+            return true;
+        }
+        if (!frameAcquireBuffer()) {
+            Serial.println("[frame] begin while buffer busy — drop");
             return true;
         }
         g_frame_id_active = doc["fid"] | 0;
@@ -88,6 +121,10 @@ bool frameHandleCommand(JsonDocument& doc) {
         // covers just (x, y, w, h).
         if (!g_frame_buf) {
             Serial.println("[frame] region_begin without buf");
+            return true;
+        }
+        if (!frameAcquireBuffer()) {
+            Serial.println("[frame] region_begin while buffer busy — drop");
             return true;
         }
         g_frame_id_active = doc["fid"] | 0;
@@ -140,6 +177,7 @@ bool frameHandleCommand(JsonDocument& doc) {
                           rc, (unsigned)g_frame_offset, (unsigned)b64_len);
             g_frame_in_progress = false;
             g_last_state = "decode-err";
+            frameReleaseBuffer();
             return true;
         }
         g_frame_offset += decoded;
@@ -153,6 +191,7 @@ bool frameHandleCommand(JsonDocument& doc) {
         if (fid != g_frame_id_active) {
             Serial.printf("[frame] end fid mismatch\n");
             g_frame_in_progress = false;
+            frameReleaseBuffer();
             return true;
         }
         // CRC check (optional — if daemon set crc=0, skip).
@@ -167,6 +206,7 @@ bool frameHandleCommand(JsonDocument& doc) {
                               (unsigned)g_frame_offset);
                 g_frame_in_progress = false;
                 g_last_state = "crc-fail";
+                frameReleaseBuffer();
                 return true;
             }
         }
@@ -188,19 +228,15 @@ bool frameHandleCommand(JsonDocument& doc) {
                           (unsigned)g_region_w, (unsigned)g_region_h,
                           (unsigned)g_frame_offset,
                           (unsigned)g_chunks_received);
-            M5.EPD.WritePartGram4bpp(g_region_x, g_region_y,
-                                     g_region_w, g_region_h, g_frame_buf);
-            M5.EPD.UpdateArea(g_region_x, g_region_y, g_region_w, g_region_h,
-                              UPDATE_MODE_GC16);
+            frameDisplay(g_region_x, g_region_y, g_region_w, g_region_h);
         } else {
             Serial.printf("[frame] end fid=%u OK (%u bytes %u chunks) — pushing\n",
                           (unsigned)fid, (unsigned)g_frame_offset,
                           (unsigned)g_chunks_received);
-            M5.EPD.WritePartGram4bpp(0, 0, FRAME_W, FRAME_H, g_frame_buf);
-            M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+            frameDisplay(0, 0, FRAME_W, FRAME_H);
         }
         g_frame_in_progress = false;
-        g_last_state = "displayed";
+        frameReleaseBuffer();
         return true;
     }
 

@@ -10,10 +10,13 @@
 #include <ArduinoJson.h>
 #include <rom/rtc.h>
 #include <esp_sleep.h>
+#include <ESPmDNS.h>
 
 #include "ble_bridge.h"
 #include "widgets.h"
 #include "frame_receiver.h"
+#include "wifi_bridge.h"
+#include "http_server.h"
 
 #ifndef CARD_VERSION
 #define CARD_VERSION "0.6.4"
@@ -50,6 +53,44 @@ static int batteryPct(uint32_t* out_mv = nullptr) {
     return pct;
 }
 
+// Power mode (v0.8): is the device on USB-C power or running off battery?
+// M5EPD library doesn't expose isCharging() on this version; we infer
+// from battery voltage. A 1S lipo can never read above ~4200 mV while
+// discharging, so >4150 mV with stable trend means the charger is
+// holding the rail up. Imprecise but enough to pick architecture A
+// (Wi-Fi always on) vs C (battery, Wi-Fi on-demand).
+static bool g_was_charging = false;
+static bool isOnUSBPower() {
+    return M5.getBatteryVoltage() > 4150;
+}
+
+// mDNS — call when Wi-Fi just connected, tear down when it drops. The
+// service name lets the daemon discover the device with `_claude-card._tcp`.
+static bool g_mdns_up = false;
+static void startMDNSIfNeeded() {
+    if (g_mdns_up || !wifiConnected()) return;
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_BT);
+    char host[16];
+    snprintf(host, sizeof(host), "card-%02x%02x", mac[4], mac[5]);
+    if (!MDNS.begin(host)) {
+        Serial.println("[mdns] begin FAILED");
+        return;
+    }
+    MDNS.addService("claude-card", "tcp", httpServerPort());
+    MDNS.addServiceTxt("claude-card", "tcp", "fw", CARD_VERSION);
+    MDNS.addServiceTxt("claude-card", "tcp", "proto", "1");
+    g_mdns_up = true;
+    Serial.printf("[mdns] advertising as %s.local — _claude-card._tcp:%u\n",
+                  host, httpServerPort());
+}
+static void stopMDNS() {
+    if (!g_mdns_up) return;
+    MDNS.end();
+    g_mdns_up = false;
+    Serial.println("[mdns] torn down");
+}
+
 // Emit a status_report JSON line. Daemon's RX parser picks it up and
 // stores fields into DEVICE_TELEMETRY (battery for the bottom bar; fw /
 // mac / uptime_s for the settings page). Safe to call on any cadence.
@@ -71,7 +112,7 @@ static void emitStatusReport() {
 // JSON command dispatch — claude-card only cares about widget_set + time + owner.
 // Everything else from the daemon's heartbeat is ignored (we don't have a
 // dashboard to update).
-static bool dispatchCmd(JsonDocument& doc) {
+bool dispatchCmd(JsonDocument& doc) {
     // Diagnostic: log every command we see (helps verify the daemon's
     // chunks actually reach + parse on device).
     const char* dbg_cmd = doc["cmd"];
@@ -158,6 +199,39 @@ static bool dispatchCmd(JsonDocument& doc) {
             delay(200);
             ESP.restart();
             return true;   // unreachable
+        }
+        if (strcmp(cmd, "wifi_set") == 0) {
+            // v0.8: provision Wi-Fi over BLE (or serial). Daemon's
+            // /provision-wifi forwards this. NVS-write is non-blocking;
+            // reconnect happens in wifiPoll().
+            const char* ssid = doc["ssid"] | "";
+            const char* pass = doc["password"] | "";
+            wifiSetCredentials(ssid, pass);
+            char resp[64];
+            snprintf(resp, sizeof(resp),
+                     "{\"ack\":\"wifi_set\",\"ok\":true,\"ssid\":\"%s\"}\n",
+                     ssid);
+            Serial.print(resp);
+            bleWrite((const uint8_t*)resp, strlen(resp));
+            return true;
+        }
+        if (strcmp(cmd, "wifi_wake_now") == 0) {
+            // Architecture C: battery mode keeps Wi-Fi off until the daemon
+            // asks it to come up. Ack now; the ack:status that fires once
+            // Wi-Fi connects carries the IP.
+            wifiWakeNow();
+            const char* response = "{\"ack\":\"wifi_wake_now\",\"ok\":true}\n";
+            Serial.print(response);
+            bleWrite((const uint8_t*)response, strlen(response));
+            return true;
+        }
+        if (strcmp(cmd, "wifi_power_down") == 0) {
+            // Architecture C: daemon finished pushing; let the radio sleep.
+            wifiPowerDown();
+            const char* response = "{\"ack\":\"wifi_power_down\",\"ok\":true}\n";
+            Serial.print(response);
+            bleWrite((const uint8_t*)response, strlen(response));
+            return true;
         }
     }
 
@@ -320,6 +394,19 @@ void setup() {
 
     startBt();
     Serial.printf("[ble] advertising as '%s'\n", btName);
+
+    // v0.8: Wi-Fi. NVS-driven; if no credentials, stays off until cmd:wifi_set.
+    // Architecture A (on USB power): try to connect at boot so HTTP push
+    // works immediately. Architecture C (battery): stay off until the
+    // daemon asks via cmd:wifi_wake_now.
+    g_was_charging = isOnUSBPower();
+    Serial.printf("[power] on_usb=%s\n", g_was_charging ? "yes" : "no");
+    if (g_was_charging) {
+        wifiInit();
+    } else {
+        Serial.println("[wifi] battery mode — radio off until wake_now");
+    }
+
     Serial.println("[boot] ready — awaiting first frame from daemon");
 
     // Initial status report so the daemon's DEVICE_TELEMETRY has data
@@ -329,6 +416,27 @@ void setup() {
 
 void loop() {
     cardPollSerial();    // drains serial / BLE, dispatches commands
+    wifiPoll();          // drives reconnect retries
+    httpServerPoll();    // accepts inbound HTTP connections (one at a time)
+
+    // v0.8: power-mode tracking. If user plugs in USB while we were on
+    // battery (radio off), bring Wi-Fi back up automatically. If they
+    // unplug, leave the connection alone — wifiPoll handles drops.
+    bool charging = isOnUSBPower();
+    if (charging != g_was_charging) {
+        g_was_charging = charging;
+        Serial.printf("[power] state change: on_usb=%s\n", charging ? "yes" : "no");
+        if (charging && !wifiConnected()) wifiWakeNow();
+    }
+
+    // v0.8: bring mDNS up/down to follow the Wi-Fi link state.
+    if (wifiConnected()) {
+        if (!httpServerRunning()) httpServerStart();
+        startMDNSIfNeeded();
+    } else {
+        if (httpServerRunning()) httpServerStop();
+        if (g_mdns_up) stopMDNS();
+    }
 
     // Periodic status_report every 60 s. Cheap (one JSON line), keeps the
     // daemon's DEVICE_TELEMETRY warm so the bottom-bar battery indicator

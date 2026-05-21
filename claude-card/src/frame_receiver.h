@@ -39,3 +39,18 @@ bool frameReceiverInit();
 
 // Diagnostics — current state for boot log.
 const char* frameReceiverStateName();
+
+// v0.8 — shared accessors so the HTTP server (Wi-Fi transport) can write
+// directly into the same PSRAM buffer instead of allocating a second one.
+// All three transports (serial / BLE / Wi-Fi) take the same code path
+// after the bytes land in the buffer.
+uint8_t* frameBuffer();          // 259200 bytes in PSRAM, or nullptr
+size_t   frameBufferSize();
+// Push a region (or the whole canvas) of frameBuffer() to the e-ink panel.
+// (x, y, w, h) = (0, 0, FRAME_W, FRAME_H) for a full frame, otherwise the
+// region rectangle. Caller has already filled frameBuffer()[0..w*h/2).
+void     frameDisplay(int x, int y, int w, int h);
+// Try-lock so two transports don't stomp the buffer at the same time.
+// Returns true if lock acquired; caller must call frameReleaseBuffer().
+bool     frameAcquireBuffer();
+void     frameReleaseBuffer();

@@ -76,13 +76,26 @@ def _kv_row(d, x, y, w, key, value, key_w=180):
     d.text((x, y), key, fill=MUTED, font=f)
     if value:
         vstr = str(value)
-        # 简单的尾部截断 — 中文字宽变化大，估保守
         if d.textlength(vstr, font=f) > w - key_w:
             while vstr and d.textlength(vstr + "...", font=f) > w - key_w:
                 vstr = vstr[:-1]
             vstr += "..."
         d.text((x + key_w, y), vstr, fill=INK, font=f_b)
-    return y + card_render.BODY_SIZE + 10   # v2: 加大行距 6→10
+    return y + card_render.BODY_SIZE + 6     # v0.8: 10→6, 让 Wi-Fi 那行有位置
+
+
+def _kv_row_2line(d, x, y, w, key, value_line_1, value_line_2, key_w=180):
+    """Wi-Fi row variant: key on first line with line 1; line 2 continues
+    in value column. Used for ssid/ip pairs that don't fit one row."""
+    f = card_render.font()
+    f_b = card_render.font(bold=True)
+    d.text((x, y), key, fill=MUTED, font=f)
+    if value_line_1:
+        d.text((x + key_w, y), str(value_line_1), fill=INK, font=f_b)
+    y += card_render.BODY_SIZE + 4
+    if value_line_2:
+        d.text((x + key_w, y), str(value_line_2), fill=MUTED, font=f)
+    return y + card_render.BODY_SIZE + 6
 
 
 def _action_button(d, x, y, w, h, icon, label, action_id):
@@ -132,7 +145,7 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
         if bat_v: bat_str += f"   ({bat_v / 1000:.2f} V)"
     y = _kv_row(d, PADDING, y, w, "电量",     bat_str)
     y = _kv_row(d, PADDING, y, w, "运行时长", state.get("uptime", "—"))
-    y += 18
+    y += 12
 
     # ---- 连接 ----
     y = _section_header(d, PADDING, y, "连接")
@@ -144,11 +157,27 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
                 "● 已连接" if state.get("daemon_ok") else "○ 未连接")
     y = _kv_row(d, PADDING, y, w, "蓝牙",
                 "已配对" if state.get("ble_paired") else "未配对")
-    y += 22
+    # v0.8 Wi-Fi 状态：两行 — line1 ● SSID; line2 IP (rssi)
+    if state.get("wifi_connected"):
+        ssid = state.get("wifi_ssid", "") or "(unknown)"
+        ip   = state.get("wifi_ip", "") or ""
+        rssi = state.get("wifi_rssi")
+        line1 = f"● {ssid}"
+        line2 = ip if ip else ""
+        if isinstance(rssi, int):
+            line2 = f"{line2}   {rssi} dBm" if line2 else f"{rssi} dBm"
+        y = _kv_row_2line(d, PADDING, y, w, "Wi-Fi", line1, line2)
+    else:
+        cfg_ssid = state.get("wifi_ssid", "")
+        if cfg_ssid:
+            y = _kv_row(d, PADDING, y, w, "Wi-Fi", f"○ 未连接 ({cfg_ssid})")
+        else:
+            y = _kv_row(d, PADDING, y, w, "Wi-Fi", "未配置")
+    y += 14
 
     # ---- 操作 ----
     y = _section_header(d, PADDING, y, "操作")
-    btn_h = 62
+    btn_h = 54
     btn_w = w
     actions = [
         ("●", "刷新组件",           "refresh"),
@@ -159,7 +188,7 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
     ]
     for icon, label, aid in actions:
         y = _action_button(d, PADDING, y, btn_w, btn_h, icon, label, aid)
-        y += 12
+        y += 8
 
     # ---- 底部提示 ----
     foot = "点击上方任一项执行  ·  左上 返回 退出"
@@ -181,15 +210,20 @@ if __name__ == "__main__":
     a = ap.parse_args()
     fake = {
         "model":       "M5Paper V1.1",
-        "firmware":    "v0.6",
+        "firmware":    "v0.8.0",
         "mac":         "B0:B2:1C:AB:CD:EF",
         "battery_pct": 82,
         "battery_mv":  4210,
         "uptime":      "2 小时 14 分",
-        "transport":   "USB",
-        "baud":        "115200",
+        "transport":   "WIFI",
+        "baud":        "",
         "daemon_ok":   True,
         "ble_paired":  False,
+        # v0.8 wifi fields
+        "wifi_connected": True,
+        "wifi_ssid":      "HomeNet-5G",
+        "wifi_ip":        "192.168.1.42",
+        "wifi_rssi":      -52,
     }
     img = render_settings_page(fake)
     buf = io.BytesIO(); img.save(buf, format="PNG"); data = buf.getvalue()

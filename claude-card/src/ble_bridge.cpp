@@ -106,16 +106,22 @@ void bleInit(const char* deviceName) {
     NUS_TX_UUID,
     BLECharacteristic::PROPERTY_NOTIFY
   );
-  txChar->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED);
+  // v0.7: tightened from ENC → ENC_MITM. Our auth mode is
+  // ESP_LE_AUTH_REQ_SC_MITM_BOND, so bonded clients have MITM keys.
+  // Using ENC_MITM perms makes the permission check match the bond's
+  // capability — a previous mismatch (ENC perm + MITM bond) was a
+  // candidate for the silent-drop bug where daemon's write_gatt_char
+  // ACKd but RxCallbacks::onWrite never fired.
+  txChar->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM);
   BLE2902* cccd = new BLE2902();
-  cccd->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
+  cccd->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
   txChar->addDescriptor(cccd);
 
   rxChar = svc->createCharacteristic(
     NUS_RX_UUID,
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
-  rxChar->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
+  rxChar->setAccessPermissions(ESP_GATT_PERM_WRITE_ENC_MITM);
   rxChar->setCallbacks(new RxCallbacks());
 
   svc->start();
