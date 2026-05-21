@@ -25,9 +25,36 @@ allowed-tools:
 # card-widget — drive the M5Paper 副屏
 
 The card is a 540 × 960 e-ink panel sitting next to the user's monitor.
-You push 1-4 widgets and the daemon renders a single frame. Frame transfer
-takes ~32 s (one-time, debounced); idle power is 0 W. **Once-a-burst
-updates are fine; per-keystroke updates are not.**
+You push 1-4 widgets and the daemon renders a single frame; transfer
+time depends on the transport.
+
+## Transport & latency (v0.8)
+
+The daemon auto-picks Wi-Fi > USB > BLE at startup. Each path has
+different per-push characteristics — be aware:
+
+| Transport | Single-widget update | Full frame | Power use |
+|---|---|---|---|
+| **Wi-Fi** (HTTP) | ~0.2 s | ~2 s | high while connected |
+| **USB serial** @ 115200 | ~1 s region / ~32 s full | 32 s | n/a |
+| **BLE** (small cmds only) | works for commands; **frame data hangs** | broken | low |
+
+The daemon also runs a **dirty-region diff** so unchanged pixels don't
+re-transmit — typical "one widget updated" push is 5-30 KB instead of
+the 250 KB full frame. You don't manage this; the daemon decides per
+push.
+
+**Push frequency rules** (e-ink hardware):
+- Per-widget content change: fine, push freely (debounced internally
+  at 1.5 s)
+- Per-keystroke streaming: NO. Each push triggers e-ink refresh which
+  damages the panel over time.
+- ai-status taking off / completion: one push at start, one at end.
+- For sub-minute "live" info (timer countdowns, music progress):
+  push at most every ~30 s.
+
+If the user's on USB (1-32 s) instead of Wi-Fi (0.2 s), strongly suggest
+configuring Wi-Fi via `/card-wifi-setup` — it's a quality-of-life upgrade.
 
 ## Layout cheat-sheet
 

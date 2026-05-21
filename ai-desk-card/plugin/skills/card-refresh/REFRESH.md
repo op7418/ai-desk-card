@@ -1,25 +1,28 @@
-# ai-desk-card 自动刷新指南
+# AI Desk Card 自动刷新指南
 
 副屏要持续有价值，widget 数据就得新鲜。这篇讲三种刷新方式 + 我推荐的
 那种。
 
-## TL;DR — 推荐方案
+## TL;DR — 推荐方案（v0.8 Wi-Fi 已通后）
 
 ```cron
-# 工作日 9:00-19:00, 每 2 小时刷一次. 用 headless Claude 拉数据 + 决策
-0 9,11,13,15,17,19 * * 1-5  /Users/<you>/Documents/code/claude-desktop-buddy-repo/ai-desk-card/plugin/skills/card-refresh/scripts/refresh_loop.sh
+# 工作日 8:00-22:00, 每 30 分钟刷一次. headless Claude 拉数据 + 决策
+*/30 8-21 * * 1-5  /Users/<you>/Documents/code/claude-desktop-buddy-repo/ai-desk-card/plugin/skills/card-refresh/scripts/refresh_loop.sh
 ```
 
-预算 ≈ **每天 6 次 × 每次 ¥0.5-1 (Sonnet 4.6) ≈ ¥3-6/天**。等价于一杯
-便利店咖啡换一整天 always-up-to-date 副屏。
+**为什么 30 分钟而不是 2 小时**：v0.8 Wi-Fi 路径下单 widget 改动 0.2 秒
+到屏，没有"刷一次要 30 秒"的物理代价。更短的间隔 = 更新鲜的副屏。
 
-省钱可以换 Haiku：把脚本里的 `claude -p` 改成 `claude -p --model haiku`
-（约 1/5 成本），或者完全用 `scripts/fallback_refresh.py`（0 成本但只能
-刷 weather / system / git-status 这种本地能算的）。
+预算 ≈ **每天 28 次 × 每次 ¥0.3-0.8 (Sonnet 4.6) ≈ ¥8-22/天**（工作日）。
+追求最低成本：
 
-## 为什么选 cron + headless Claude（而不是别的）
+- **换 Haiku** — 把脚本里 `claude -p` 改成 `claude -p --model haiku`，
+  ≈ 1/5 成本（¥2-4/天）
+- **拉长间隔** — 改回 `0 9,11,13,15,17 * * 1-5`（每 2 小时）→ ¥3-6/天
+- **完全用 fallback** — 把 cron 指向 `scripts/fallback_refresh.py`（0
+  成本但只能刷 weather / system / git-status 这三个本地能算的）
 
-我在三个方案之间纠结过：
+## 三种刷新架构
 
 ### A. cron + headless Claude（**推荐**）
 
