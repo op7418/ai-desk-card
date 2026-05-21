@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "inbox.data",
+  "description": "Aggregated unread count across multiple message sources (gmail / slack / linear / imessage etc). The PER-SOURCE breakdown is what makes this different from `messages` (which lists specific conversations).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total unread items across all sources."
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Per-source breakdown. Cap at 4 — keep one row per source.",
+      "items": {
+        "type": "object",
+        "required": ["name", "count"],
+        "additionalProperties": false,
+        "properties": {
+          "name":  { "type": "string", "maxLength": 20 },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

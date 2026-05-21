@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pr-queue.data",
+  "description": "GitHub pull-request queue — PRs needing your review + your own open PRs. Devs only. Reduces tab-switching to GitHub.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "review_count":    { "type": "integer", "minimum": 0, "description": "PRs assigned to you for review" },
+    "your_open_count": { "type": "integer", "minimum": 0, "description": "Your open PRs awaiting others" },
+    "items": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "additionalProperties": false,
+        "properties": {
+          "number": { "type": "string", "maxLength": 8 },
+          "title":  { "type": "string", "maxLength": 56 },
+          "author": { "type": "string", "maxLength": 24 },
+          "status": { "type": "string", "enum": ["review", "yours", "approved", "blocked", ""] }
+        }
+      }
+    }
+  }
+}

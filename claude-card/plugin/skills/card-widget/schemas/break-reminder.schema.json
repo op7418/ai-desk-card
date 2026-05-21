@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "break-reminder.data",
+  "description": "Health / focus-hygiene widget. Tracks how long since last break, sitting time, eye-rest countdown. The副屏 is a passive observer — good fit for nag-free health nudges.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "last_break_min_ago": { "type": "integer", "minimum": 0, "description": "Minutes since the user last took a break" },
+    "sitting_min":        { "type": "integer", "minimum": 0, "description": "Minutes the user has been sitting" },
+    "next_eye_rest_min":  { "type": "integer", "description": "Minutes until next 20-20-20 eye rest (negative = overdue)" },
+    "advice":             { "type": "string", "maxLength": 60, "description": "Optional one-line nudge, e.g. 'stand up' / 'look 20ft away'" }
+  }
+}

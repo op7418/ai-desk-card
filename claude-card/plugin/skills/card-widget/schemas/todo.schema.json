@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "todo.data",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string", "maxLength": 28 },
+    "items": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Cap at 4 — card displays at glance distance, fewer + larger is the rule.",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "additionalProperties": false,
+        "properties": {
+          "text": { "type": "string", "maxLength": 60 },
+          "due":  { "type": "string" },
+          "tag":  { "type": "string", "enum": ["today", "tomorrow", "this-week", "later", "overdue", ""] }
+        }
+      }
+    }
+  }
+}

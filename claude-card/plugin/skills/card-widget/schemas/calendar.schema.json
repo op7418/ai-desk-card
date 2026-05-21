@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "calendar.data",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "now_iso": { "type": "string", "description": "ISO-8601 timestamp; HH:MM is extracted for the 'now' indicator" },
+    "events": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["start", "title"],
+        "additionalProperties": false,
+        "properties": {
+          "start": { "type": "string", "maxLength": 5 },
+          "end":   { "type": "string", "maxLength": 5 },
+          "title": { "type": "string", "maxLength": 48 }
+        }
+      }
+    }
+  }
+}

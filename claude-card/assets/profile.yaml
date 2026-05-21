@@ -1,0 +1,47 @@
+# claude-card sleep-frame profile. The name card shown on the device
+# when it's powered off / deep-sleeping. e-ink retains the last frame at
+# zero power, so this is your "digital business card" — always visible
+# until the next wake-up + push.
+#
+# AI: when the user asks to update their card / 名片, EDIT this file
+# directly (with Edit / Write tools). Then call /card-sleep to push the
+# new rendering to the device.
+#
+# Avatar + QR images live in this same directory. If `avatar_image` is
+# missing or doesn't exist, a placeholder (gray circle with the first
+# character of `name`) is used. Same for `qr_image` (placeholder grid).
+
+name: "歸藏"
+
+# Short subtitle line under the name. Keep ≤ 36 chars.
+tagline: "AI / LLM / Image / Video / Design"
+
+# Body paragraphs. Each item is one line; multi-line content goes as
+# separate items. Auto-wrapped to fit slot width. Keep total ≤ 4-5 lines.
+bio_lines:
+  - "关注人工智能、LLM、AI 图像视频和设计"
+  - "Interested in AI, LLM, Stable Diffusion, design"
+  - ""
+  - "AIGC 周刊主理人 | 公众号：歸藏的 AI 工具箱"
+
+# Icon + text chips. Icon is a single short label (avoid emoji — the
+# bundled PingFang font doesn't include them; they render as tofu).
+# Use a short text tag instead, e.g. "Job" / "City" / "Link". Up to 4.
+tags:
+  - icon: "Job"
+    text: "产品 · 设计"
+  - icon: "City"
+    text: "北京"
+  - icon: "Web"
+    text: "twitter.com/op7418"
+
+# QR code image (left side of QR row) and the label under it.
+qr_image: "qr.png"
+qr_label: "扫码加微信 / 关注公众号"
+
+# Avatar (square image, gets circular-cropped by renderer). Optional —
+# placeholder if missing.
+avatar_image: "avatar.png"
+
+# Footer (small line at very bottom).
+footer: "claude-card · sleeping"

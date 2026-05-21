@@ -1,0 +1,21 @@
+name: minimal
+typography:
+  zh_font: PingFang SC
+  en_font: Inter
+  base_size: 28      # glance-distance reading from 30-50 cm — never below 22
+  title_size: 36
+  headline_size: 80  # weather temp etc.
+  line_height: 1.5
+layout:
+  padding: 24
+  gutter: 16
+  density: glanceable    # compact | comfortable | poster | glanceable
+borders:
+  style: hairline
+  width: 1
+icons:
+  set: glyph
+markers:
+  todo_overdue: "!"
+  todo_today:   "▶"
+  todo_future:  "▢"

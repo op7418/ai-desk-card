@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "weather.data",
+  "type": "object",
+  "required": ["location"],
+  "additionalProperties": false,
+  "properties": {
+    "location": { "type": "string", "maxLength": 20 },
+    "current": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temp_c":    { "type": "number" },
+        "condition": { "type": "string", "maxLength": 20 }
+      }
+    },
+    "forecast": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["day"],
+        "properties": {
+          "day":       { "type": "string", "maxLength": 6 },
+          "high":      { "type": "number" },
+          "low":       { "type": "number" },
+          "condition": { "type": "string", "maxLength": 20 }
+        }
+      }
+    }
+  }
+}

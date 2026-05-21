@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ai-status.data",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session_name": { "type": "string", "maxLength": 28 },
+    "model":        { "type": "string", "maxLength": 20 },
+    "task":         { "type": "string", "maxLength": 60 },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "used":  { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "last_message_preview": { "type": "string", "maxLength": 140 },
+    "elapsed_seconds":      { "type": "integer", "minimum": 0 }
+  }
+}

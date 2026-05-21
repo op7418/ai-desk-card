@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deadlines.data",
+  "description": "Upcoming deadlines / important dates. Different from `todo` (today-focused) and `calendar` (today's schedule) — this is multi-day countdown of 'must-finish-by' dates.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "additionalProperties": false,
+        "properties": {
+          "title":     { "type": "string", "maxLength": 48 },
+          "due_label": { "type": "string", "maxLength": 16, "description": "Human countdown like 'in 2d', '3 weeks', 'today' " },
+          "is_urgent": { "type": "boolean", "description": "Bolds + marks the row" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "next-meeting.data",
+  "description": "ONLY the next calendar event with prominent countdown. Different from `calendar` (which lists today's schedule). Use this when the user needs to know 'when's the next thing?' at a glance.",
+  "type": "object",
+  "required": ["title"],
+  "additionalProperties": false,
+  "properties": {
+    "title":     { "type": "string", "maxLength": 48 },
+    "start_in":  { "type": "string", "maxLength": 16, "description": "Human countdown like 'in 14m' / '2h 30m' / 'now'" },
+    "start_at":  { "type": "string", "maxLength": 8,  "description": "Wall clock HH:MM" },
+    "attendees": { "type": "string", "maxLength": 60, "description": "Comma-separated names list" },
+    "location":  { "type": "string", "maxLength": 40, "description": "Room / Zoom link / etc." }
+  }
+}

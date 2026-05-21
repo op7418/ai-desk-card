@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "now-playing.data",
+  "description": "Currently-playing track. Source typically Spotify, Apple Music, etc.",
+  "type": "object",
+  "required": ["track"],
+  "additionalProperties": false,
+  "properties": {
+    "track":        { "type": "string", "maxLength": 60 },
+    "artist":       { "type": "string", "maxLength": 36 },
+    "source":       { "type": "string", "maxLength": 12 },
+    "position_sec": { "type": "integer", "minimum": 0 },
+    "duration_sec": { "type": "integer", "minimum": 0 },
+    "playing":      { "type": "boolean", "default": true }
+  }
+}

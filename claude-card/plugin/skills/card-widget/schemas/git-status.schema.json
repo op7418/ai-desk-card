@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "git-status.data",
+  "description": "Working-tree state of one watched repo. Branch name is the headline; counts go in the badges row.",
+  "type": "object",
+  "required": ["branch"],
+  "additionalProperties": false,
+  "properties": {
+    "repo_name":         { "type": "string", "maxLength": 32 },
+    "branch":            { "type": "string", "maxLength": 32 },
+    "modified":          { "type": "integer", "minimum": 0 },
+    "untracked":         { "type": "integer", "minimum": 0 },
+    "staged":            { "type": "integer", "minimum": 0 },
+    "ahead":             { "type": "integer" },
+    "behind":            { "type": "integer" },
+    "last_commit_hash":  { "type": "string", "maxLength": 10 },
+    "last_commit_msg":   { "type": "string", "maxLength": 48 }
+  }
+}

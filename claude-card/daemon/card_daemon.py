@@ -1,0 +1,736 @@
+#!/usr/bin/env python3
+"""claude-card daemon — HTTP API + USB/BLE bridge to the M5Paper card firmware.
+
+Forked + slimmed from ../tools/claude_code_bridge.py. Differences:
+  - No Claude Code hook handlers; this daemon is display-only
+  - No buddy/dashboard heartbeat (firmware doesn't show one)
+  - widget副屏 is the only thing on the device
+
+API:
+    POST /widget        push or replace one widget
+    DELETE /widget?slot=...   clear a slot (no slot = all)
+    GET  /widget        snapshot of cached widgets
+    POST /widgets/preview     Pillow-rendered 540x960 PNG for desktop
+    GET  /pair-status   { connected, transport }
+    POST /unpair        forward unpair cmd to device
+
+Usage:
+    python3 card_daemon.py                 # auto: serial first
+    python3 card_daemon.py --transport ble
+    python3 card_daemon.py --transport serial --port /dev/cu.usbserial-XXX
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import binascii
+import glob
+import json
+import os
+import sys
+import threading
+import time
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+# v0.6 server-side rendering. Device receives 540×960 4bpp pixel frames
+# rather than widget_set JSON. We bump baud accordingly. Push debounce on
+# top of M5EPD's ~500ms refresh time means we don't hammer the panel.
+SERIAL_BAUD = 115200   # v0.6 first cut — see main.cpp note about baud bump issues
+FRAME_W, FRAME_H = 540, 960
+FRAME_BYTES = FRAME_W * FRAME_H // 2   # 259,200
+PUSH_DEBOUNCE_S = 1.5
+
+NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+WIDGET_LOCK = threading.Lock()
+WIDGET_CACHE: dict = {}
+
+# v0.6.3 — settings page is a full-screen alternate view. Daemon flips
+# IN_SETTINGS when the bottom-bar settings chip is tapped (touch dispatch
+# arrives in v0.6.4). Render path branches on this flag.
+VIEW_LOCK = threading.Lock()
+IN_SETTINGS = False
+VIEW_HOT_ZONES: list = []          # populated after settings render; firmware uses for tap routing
+DEVICE_TELEMETRY: dict = {}        # firmware-reported state (battery, fw, mac, uptime) — fills on /status_report
+WIDGET_SLOTS = ("top-left", "top-right", "middle", "bottom", "full")
+WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
+                "ai-status", "ai-tasks",
+                "scratch", "focus", "now-playing", "git-status", "system",
+                # v0.6.2 — monitor-side glance widgets
+                "inbox", "next-meeting", "pr-queue",
+                "break-reminder", "deadlines")
+TRANSPORT = None
+
+
+def log(*a, **kw): print(*a, file=sys.stderr, flush=True, **kw)
+
+
+# ---- Transports ----
+
+class Transport:
+    def start(self, on_byte, on_connect=None): raise NotImplementedError
+    def write(self, data: bytes): raise NotImplementedError
+    def connected(self) -> bool: raise NotImplementedError
+
+
+class SerialTransport(Transport):
+    def __init__(self, port):
+        import serial
+        self.ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        self._lock = threading.Lock()
+        time.sleep(0.2)
+        log(f"[serial] opened {port} @ {SERIAL_BAUD} baud")
+
+    def start(self, on_byte, on_connect=None):
+        if on_connect: on_connect()
+        threading.Thread(target=self._reader, args=(on_byte,), daemon=True).start()
+
+    def _reader(self, on_byte):
+        while True:
+            try: chunk = self.ser.read(256)
+            except Exception as e:
+                log(f"[serial] read fail: {e}"); time.sleep(1); continue
+            for b in chunk: on_byte(b)
+
+    def write(self, data: bytes):
+        with self._lock:
+            try: self.ser.write(data)
+            except Exception as e: log(f"[serial] write fail: {e}")
+
+    def connected(self): return True
+
+
+class BLETransport(Transport):
+    def __init__(self, name_prefix="Card-"):
+        self._name_prefix = name_prefix
+        self._loop = None; self._client = None
+        self._on_byte = None; self._on_connect = None
+        self._connected_evt = threading.Event()
+
+    def start(self, on_byte, on_connect=None):
+        self._on_byte = on_byte; self._on_connect = on_connect
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._main())
+        except Exception as e: log(f"[ble] thread crashed: {e!r}")
+
+    async def _main(self):
+        try:
+            from bleak import BleakScanner, BleakClient
+        except ImportError:
+            log("[ble] bleak not installed. pip install bleak"); return
+        while True:
+            log(f"[ble] scanning for '{self._name_prefix}*'...")
+            device = None
+            try:
+                device = await BleakScanner.find_device_by_filter(
+                    lambda d, ad: bool(d.name) and d.name.startswith(self._name_prefix),
+                    timeout=10.0)
+            except Exception as e: log(f"[ble] scan: {e}")
+            if not device:
+                await asyncio.sleep(5); continue
+            log(f"[ble] connecting to {device.name} ({device.address})")
+            try:
+                async with BleakClient(device) as client:
+                    self._client = client
+                    def _on_notify(_s, data: bytearray):
+                        for b in data: self._on_byte(b)
+                    await client.start_notify(NUS_TX_UUID, _on_notify)
+                    self._connected_evt.set()
+                    log("[ble] connected")
+                    if self._on_connect:
+                        threading.Thread(target=self._on_connect, daemon=True).start()
+                    while client.is_connected: await asyncio.sleep(1.0)
+                    log("[ble] link lost")
+            except Exception as e: log(f"[ble] client: {e!r}")
+            finally:
+                self._client = None; self._connected_evt.clear()
+            await asyncio.sleep(2)
+
+    def write(self, data: bytes):
+        client = self._client
+        if client is None or not client.is_connected: return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                client.write_gatt_char(NUS_RX_UUID, data, response=False), self._loop)
+            fut.result(timeout=3)
+        except Exception as e: log(f"[ble] write: {e!r}")
+
+    def connected(self): return self._connected_evt.is_set()
+
+
+# ---- Line-based RX parser. Logs every incoming line; also fans out to
+#      any listener registered via add_rx_listener (used by /firmware-probe
+#      to capture acks within a short window).
+
+_rx_buf = bytearray()
+_RX_LISTENERS: list = []          # callables: (str) -> None
+_RX_LISTENERS_LOCK = threading.Lock()
+
+
+def add_rx_listener(fn):
+    with _RX_LISTENERS_LOCK: _RX_LISTENERS.append(fn)
+
+
+def remove_rx_listener(fn):
+    with _RX_LISTENERS_LOCK:
+        try: _RX_LISTENERS.remove(fn)
+        except ValueError: pass
+
+
+def on_rx_byte(b: int):
+    global _rx_buf
+    if b in (0x0A, 0x0D):
+        if _rx_buf:
+            raw = bytes(_rx_buf); _rx_buf = bytearray()
+            try: line = raw.decode("utf-8", errors="replace")
+            except Exception: return
+            log(f"[dev<] {line}")
+            with _RX_LISTENERS_LOCK: listeners = list(_RX_LISTENERS)
+            for fn in listeners:
+                try: fn(line)
+                except Exception as e: log(f"[rx] listener err: {e!r}")
+    else:
+        if len(_rx_buf) < 4096: _rx_buf.append(b)
+
+
+def send_line(obj: dict):
+    if TRANSPORT is None: return
+    data = (json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    TRANSPORT.write(data)
+
+
+# ---- Widget cache + outbound frame ----
+
+def _widget_snapshot() -> list:
+    now = time.time()
+    out = []
+    with WIDGET_LOCK:
+        for slot, w in list(WIDGET_CACHE.items()):
+            written = w.get("written_at", 0)
+            ttl = w.get("ttl") or 0
+            if ttl > 0 and (now - written) > ttl:
+                WIDGET_CACHE.pop(slot, None); continue
+            out.append({
+                "slot": slot,
+                "type": w.get("type"),
+                "data": w.get("data") or {},
+                "theme": w.get("theme") or "",
+                "stale": (w.get("stale_after", 0) > 0
+                          and (now - written) > w["stale_after"]),
+                "age": int(now - written),
+            })
+    return out
+
+
+def send_widget_frame():
+    # Legacy widget_set JSON path. v0.6 firmware still parses this into its
+    # cache (no-op), but rendering happens via push_frame() instead. Kept
+    # so older firmware revisions still work as a fallback.
+    send_line({"cmd": "widget_set", "version": 1, "widgets": _widget_snapshot()})
+
+
+# v0.6 frame push pipeline ----
+
+_FRAME_ID = 0
+_FRAME_LAST_PUSH = 0.0   # epoch of last completed push (for bar's "Xs ago")
+_FRAME_LOCK = threading.Lock()
+_FRAME_DIRTY = threading.Event()
+
+def _crc32(data: bytes) -> int:
+    return binascii.crc32(data) & 0xFFFFFFFF
+
+
+def push_frame_bytes(packed: bytes):
+    """Send a packed 4bpp frame (FRAME_BYTES exactly) via the chunked
+    protocol. Caller is responsible for serialising calls (we hold
+    _FRAME_LOCK)."""
+    global _FRAME_ID
+    if len(packed) != FRAME_BYTES:
+        log(f"[frame] WARN size {len(packed)} != {FRAME_BYTES}")
+    with _FRAME_LOCK:
+        _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
+        fid = _FRAME_ID
+        crc = _crc32(packed)
+        # 2 KB raw → 2.7 KB base64 + JSON wrapper ≈ 2.8 KB total per line.
+        # Must stay comfortably under firmware's LineBuf<8192> with margin
+        # for the JSON wrapper. Earlier 3 KB chunks blew past 4096 buffer
+        # and got silently truncated → assembled garbage → CRC fail (or
+        # worse, no error at all because the chunk parse just dropped).
+        CHUNK = 2048
+        chunks = [packed[i:i + CHUNK] for i in range(0, len(packed), CHUNK)]
+
+        t0 = time.time()
+        send_line({"cmd": "frame_begin", "fid": fid, "w": FRAME_W,
+                   "h": FRAME_H, "bpp": 4, "chunks": len(chunks), "crc": crc})
+        for seq, chunk in enumerate(chunks):
+            send_line({"cmd": "frame_chunk", "fid": fid, "seq": seq,
+                       "data": base64.b64encode(chunk).decode()})
+        send_line({"cmd": "frame_end", "fid": fid})
+        dt = time.time() - t0
+        log(f"[frame] pushed fid={fid} {len(packed)}B in {len(chunks)} chunks ({dt:.2f}s)")
+
+
+def render_and_push_sleep():
+    """Render the sleep-frame name card and push it. Caller is expected to
+    follow up with send_line({cmd:sleep_now}) so the device enters deep
+    sleep with the last frame on the panel."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import card_render_sleep
+        import importlib
+        importlib.reload(card_render_sleep)
+        # card_render_sleep imports card_render internally — reload that too
+        # so any divider / font edits propagate without daemon restart.
+        import card_render
+        importlib.reload(card_render)
+    except Exception as e:
+        log(f"[sleep] import fail: {e!r}")
+        return False
+    try:
+        profile = card_render_sleep.load_profile()
+        img = card_render_sleep.render_sleep_frame(profile)
+        packed = card_render.to_4bpp_packed(img)
+    except Exception as e:
+        log(f"[sleep] render failed: {e!r}")
+        return False
+    log(f"[sleep] rendering name card for '{profile.get('name', '?')}'")
+    push_frame_bytes(packed)
+    return True
+
+
+def _bar_status() -> dict:
+    """Build the bottom-bar status payload at render time."""
+    age = None
+    if _FRAME_LAST_PUSH > 0:
+        age = int(time.time() - _FRAME_LAST_PUSH)
+    return {
+        "transport":  type(TRANSPORT).__name__.replace("Transport", "").upper()
+                       if TRANSPORT else None,
+        "ble_paired": False,   # firmware doesn't report this yet (v0.6.4 TODO)
+        "battery_pct": DEVICE_TELEMETRY.get("battery_pct"),
+        "time":       datetime.now().strftime("%H:%M"),
+        "frame_age":  age,
+    }
+
+
+def _settings_state() -> dict:
+    """Build the state blob passed to render_settings_page. Mostly mirrors
+    DEVICE_TELEMETRY (firmware-reported via /status_report) plus daemon-
+    visible facts (transport, baud, daemon_ok)."""
+    transport_name = (type(TRANSPORT).__name__.replace("Transport", "").upper()
+                      if TRANSPORT else "—")
+    state = dict(DEVICE_TELEMETRY)   # battery, firmware, mac, uptime, battery_mv ...
+    state.setdefault("model", "M5Paper V1.1")
+    state["transport"] = transport_name
+    state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
+    state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
+    state["ble_paired"] = False
+    return state
+
+
+def render_and_push():
+    """Build current widget snapshot, render with PIL, pack 4bpp, push.
+    importlib.reload(card_render) on every call so edits to the renderer
+    take effect without restarting the daemon. Dispatches to the settings
+    page renderer when IN_SETTINGS is set."""
+    global _FRAME_LAST_PUSH, VIEW_HOT_ZONES
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import card_render
+        import importlib
+        importlib.reload(card_render)
+    except Exception as e:
+        log(f"[render] import fail: {e!r}")
+        return
+    try:
+        if IN_SETTINGS:
+            import card_render_settings
+            importlib.reload(card_render_settings)
+            img = card_render_settings.render_settings_page(_settings_state())
+            VIEW_HOT_ZONES = card_render_settings.get_hot_zones()
+        else:
+            img = card_render.render_image(_widget_snapshot(),
+                                           status=_bar_status())
+            VIEW_HOT_ZONES = []
+        packed = card_render.to_4bpp_packed(img)
+    except Exception as e:
+        log(f"[render] failed: {e!r}")
+        return
+    push_frame_bytes(packed)
+    _FRAME_LAST_PUSH = time.time()
+
+
+def schedule_push():
+    """Debounce trigger. Sets a dirty flag; the push_loop thread coalesces
+    rapid POSTs into a single render+push after PUSH_DEBOUNCE_S of quiet."""
+    _FRAME_DIRTY.set()
+
+
+def push_loop():
+    """Background coalescing thread. Wakes on dirty flag, waits for the
+    debounce window, then renders + pushes once. Multiple POSTs inside the
+    debounce window collapse to one push."""
+    while True:
+        _FRAME_DIRTY.wait()
+        # Wait for quiet: as long as dirty keeps getting set, restart timer.
+        while True:
+            time.sleep(PUSH_DEBOUNCE_S)
+            if _FRAME_DIRTY.is_set():
+                # Reset so we can detect new dirties during render.
+                _FRAME_DIRTY.clear()
+                # If anyone set it again during the sleep, the next wait
+                # below sees it immediately.
+                break
+        if not (TRANSPORT and TRANSPORT.connected()):
+            log("[frame] no transport — skipping push (will retry on next dirty)")
+            continue
+        render_and_push()
+
+
+def widget_validate(payload: dict) -> tuple:
+    t = payload.get("type")
+    if t not in WIDGET_TYPES:
+        return False, f"type must be one of {WIDGET_TYPES}, got {t!r}"
+    s = payload.get("slot")
+    if s not in WIDGET_SLOTS:
+        return False, f"slot must be one of {WIDGET_SLOTS}, got {s!r}"
+    if not isinstance(payload.get("data"), dict):
+        return False, "data must be an object"
+    return True, ""
+
+
+# ---- HTTP server ----
+
+class CardHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args): pass
+
+    def _reply(self, code: int, obj: dict):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try: self.wfile.write(body)
+        except BrokenPipeError: pass
+
+    def _handle_sleep_post(self, payload: dict):
+        """Render name card → push → tell device to deep-sleep."""
+        if not (TRANSPORT and TRANSPORT.connected()):
+            return self._reply(503, {"error": "device not connected"})
+        ok = render_and_push_sleep()
+        if not ok:
+            return self._reply(500, {"error": "render or push failed"})
+        # Tell device to enter deep sleep. Optional "wake_after_sec" in the
+        # payload (currently unused on firmware side; reserved for v0.7+).
+        wake_after = int(payload.get("wake_after_sec") or 0)
+        send_line({"cmd": "sleep_now", "wake_after_sec": wake_after})
+        log(f"[sleep] sleep_now sent (wake_after_sec={wake_after})")
+        return self._reply(200, {"ok": True, "wake_after_sec": wake_after,
+                                  "note": "device will enter deep sleep; "
+                                          "e-ink retains last frame"})
+
+    def _reply_png(self, code: int, png: bytes):
+        self.send_response(code)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(png)))
+        self.end_headers()
+        try: self.wfile.write(png)
+        except BrokenPipeError: pass
+
+    def do_GET(self):
+        path = (self.path or "/").split("?", 1)[0]
+        if path == "/widget":
+            return self._reply(200, {"widgets": _widget_snapshot()})
+        if path == "/pair-status":
+            return self._reply(200, {
+                "connected": TRANSPORT is not None and TRANSPORT.connected(),
+                "transport": type(TRANSPORT).__name__ if TRANSPORT else None,
+            })
+        if path == "/version":
+            return self._reply(200, {"daemon": "claude-card/0.5"})
+        return self._reply(404, {"error": f"unknown GET {path!r}"})
+
+    def do_DELETE(self):
+        path = (self.path or "/").split("?", 1)[0]
+        if path == "/widget":
+            qs = parse_qs(urlparse(self.path).query)
+            slot = (qs.get("slot") or [None])[0]
+            with WIDGET_LOCK:
+                if slot: WIDGET_CACHE.pop(slot, None)
+                else:    WIDGET_CACHE.clear()
+            schedule_push()
+            return self._reply(200, {"ok": True, "cleared": slot or "all"})
+        return self._reply(404, {"error": f"unknown DELETE {path!r}"})
+
+    def do_POST(self):
+        global IN_SETTINGS
+        path = (self.path or "/").split("?", 1)[0]
+        try:
+            n = int(self.headers.get("Content-Length") or "0")
+            body = self.rfile.read(n) if n > 0 else b""
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as e:
+            return self._reply(400, {"error": str(e)})
+
+        if path == "/widget":
+            ok, err = widget_validate(payload)
+            if not ok: return self._reply(400, {"error": err})
+            slot = payload["slot"]
+            entry = {
+                "type":  payload["type"],
+                "data":  payload["data"],
+                "theme": payload.get("theme") or "",
+                "ttl":   int(payload.get("ttl") or 0),
+                "stale_after": int(payload.get("stale_after") or 0),
+                "written_at": time.time(),
+            }
+            with WIDGET_LOCK:
+                WIDGET_CACHE[slot] = entry
+            log(f"[widget] {slot} ← {entry['type']}")
+            # v0.6: schedule a debounced render+push instead of sending
+            # widget_set JSON. The push thread coalesces bursts.
+            schedule_push()
+            return self._reply(200, {"ok": True, "slot": slot,
+                                     "type": entry["type"],
+                                     "push_scheduled": TRANSPORT is not None and TRANSPORT.connected()})
+
+        if path == "/widgets/preview":
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from card_render import render_preview_png
+            except ImportError as e:
+                return self._reply(500, {"error": f"Pillow missing: {e}"})
+            try:
+                png = render_preview_png(_widget_snapshot())
+            except Exception as e:
+                return self._reply(500, {"error": f"render failed: {e!r}"})
+            return self._reply_png(200, png)
+
+        if path == "/unpair":
+            send_line({"cmd": "unpair"})
+            return self._reply(200, {"ok": True})
+
+        if path == "/sleep":
+            # Render the name-card sleep frame from assets/profile.yaml,
+            # push it as a regular frame_chunk frame, then send cmd:sleep_now
+            # so the firmware enters deep_sleep (e-ink retains the last
+            # frame at 0 W).
+            return self._handle_sleep_post(payload)
+
+        if path == "/refresh":
+            # Force a re-render + re-push of current widget cache. Bound
+            # to the bottom-bar "refresh" chip in v0.6.4.
+            schedule_push()
+            return self._reply(200, {"ok": True, "note": "push scheduled"})
+
+        if path == "/restart":
+            # Tell device to esp_restart. Bottom-bar "restart" chip target.
+            send_line({"cmd": "restart"})
+            return self._reply(200, {"ok": True,
+                                     "note": "device restart command sent"})
+
+        if path == "/settings":
+            # Bottom-bar "settings" chip → enter settings page.
+            with VIEW_LOCK: IN_SETTINGS = True
+            schedule_push()
+            return self._reply(200, {"ok": True, "in_settings": True})
+
+        if path == "/back":
+            # Settings-page "back" chip → return to widget view.
+            with VIEW_LOCK: IN_SETTINGS = False
+            schedule_push()
+            return self._reply(200, {"ok": True, "in_settings": False})
+
+        if path == "/status_report":
+            # Firmware v0.6.4 reports {battery_pct, battery_mv, firmware,
+            # mac, uptime_s} every ~60s. We store the latest in
+            # DEVICE_TELEMETRY for the settings page + bottom bar.
+            try:
+                if "battery_pct" in payload: DEVICE_TELEMETRY["battery_pct"] = int(payload["battery_pct"])
+                if "battery_mv"  in payload: DEVICE_TELEMETRY["battery_mv"]  = int(payload["battery_mv"])
+                if "firmware"    in payload: DEVICE_TELEMETRY["firmware"]    = str(payload["firmware"])[:32]
+                if "mac"         in payload: DEVICE_TELEMETRY["mac"]         = str(payload["mac"])[:32]
+                if "uptime_s"    in payload:
+                    s = int(payload["uptime_s"])
+                    h, m = s // 3600, (s % 3600) // 60
+                    DEVICE_TELEMETRY["uptime"] = f"{h}h {m}m" if h else f"{m}m"
+            except (TypeError, ValueError) as e:
+                return self._reply(400, {"error": f"bad telemetry: {e}"})
+            return self._reply(200, {"ok": True})
+
+        if path == "/firmware-probe":
+            # Used by /card-onboard to decide between:
+            #   - "我们的固件 OK"              (ack:owner heard)
+            #   - "端口开但不是我们的固件"     (transport ok, no ack)
+            #   - "transport 都没起来"          (TRANSPORT is None / not connected)
+            if not TRANSPORT:
+                return self._reply(200, {"connected": False,
+                                          "our_firmware": False,
+                                          "note": "no transport"})
+            if not TRANSPORT.connected():
+                return self._reply(200, {"connected": False,
+                                          "our_firmware": False,
+                                          "note": "transport not connected"})
+            heard: dict = {}
+            evt = threading.Event()
+
+            def _capture(line: str):
+                # Firmware acks for cmd:owner look like:
+                #     {"ack":"owner","ok":true}
+                # Future v0.6.4 status_report will add fw/mac fields. Capture
+                # the first ack-shaped line we see.
+                try:
+                    obj = json.loads(line.strip())
+                except Exception:
+                    return
+                if isinstance(obj, dict) and "ack" in obj:
+                    heard.update(obj); evt.set()
+
+            add_rx_listener(_capture)
+            try:
+                send_line({"cmd": "owner",
+                           "name": os.environ.get("USER", "")})
+                evt.wait(timeout=2.5)
+            finally:
+                remove_rx_listener(_capture)
+
+            if heard:
+                return self._reply(200, {
+                    "connected":    True,
+                    "our_firmware": True,
+                    "ack":          heard,
+                    "firmware":     DEVICE_TELEMETRY.get("firmware"),
+                })
+            return self._reply(200, {
+                "connected":    True,
+                "our_firmware": False,
+                "note":         "port open, no ack within 2.5s — wrong firmware?",
+            })
+
+        if path == "/touch":
+            # Firmware v0.6.4: device sends {x, y} from touch panel; daemon
+            # maps to a hot-zone action against the last rendered view.
+            try:
+                x, y = int(payload["x"]), int(payload["y"])
+            except (KeyError, TypeError, ValueError):
+                return self._reply(400, {"error": "x,y required"})
+            action = None
+            for hz in VIEW_HOT_ZONES:
+                x0, y0, x1, y1 = hz["rect"]
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    action = hz["action"]; break
+            if action is None:
+                return self._reply(200, {"ok": True, "action": None})
+            log(f"[touch] ({x},{y}) → {action}")
+            # Dispatch internally — equivalent of hitting the endpoint
+            # by hand. Keeps logic in one place.
+            if action == "back":     return self._reply(200, _internal_dispatch("back"))
+            if action == "settings": return self._reply(200, _internal_dispatch("settings"))
+            if action == "refresh":  schedule_push(); return self._reply(200, {"action": "refresh"})
+            if action == "sleep":    return self._reply(200, _internal_dispatch("sleep"))
+            if action == "restart":  send_line({"cmd": "restart"}); return self._reply(200, {"action": "restart"})
+            if action == "repair":   send_line({"cmd": "unpair"});  return self._reply(200, {"action": "repair"})
+            if action == "clear":
+                with WIDGET_LOCK: WIDGET_CACHE.clear()
+                schedule_push(); return self._reply(200, {"action": "clear"})
+            return self._reply(200, {"ok": True, "action": action})
+
+        return self._reply(404, {"error": f"unknown POST {path!r}"})
+
+
+def _internal_dispatch(action: str) -> dict:
+    """Helper for /touch — runs the side-effects of a chip action without
+    re-entering the HTTP layer."""
+    global IN_SETTINGS
+    if action == "settings":
+        with VIEW_LOCK: IN_SETTINGS = True
+        schedule_push(); return {"action": "settings"}
+    if action == "back":
+        with VIEW_LOCK: IN_SETTINGS = False
+        schedule_push(); return {"action": "back"}
+    if action == "sleep":
+        if render_and_push_sleep():
+            send_line({"cmd": "sleep_now", "wake_after_sec": 0})
+        return {"action": "sleep"}
+    return {"action": action}
+
+
+# ---- Periodic re-push (for widget freshness while idle) ----
+
+def keepalive_loop():
+    """Re-push the current frame every 5 minutes as a safety net (in case
+    the device dropped a chunk + CRC failed). Cheap: render is fast, the
+    transfer is the slow part. Skipped when transport isn't connected.
+
+    Note: v0.6 push_loop already handles debounced pushes; keepalive only
+    kicks in when nothing else has changed the cache for 5 minutes."""
+    while True:
+        time.sleep(300)
+        if WIDGET_CACHE and TRANSPORT and TRANSPORT.connected():
+            schedule_push()
+
+
+def tz_offset_seconds() -> int:
+    now = time.time()
+    local = datetime.fromtimestamp(now)
+    utc_dt = datetime(*datetime.fromtimestamp(now, tz=None).utctimetuple()[:6])
+    return int((local - utc_dt).total_seconds())
+
+
+def pick_transport(kind: str, port: str | None) -> Transport:
+    if port:
+        return SerialTransport(port)
+    candidates = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
+    if kind == "serial":
+        if not candidates: sys.exit("no /dev/cu.usbserial-* device found")
+        return SerialTransport(candidates[0])
+    if kind == "ble":
+        return BLETransport()
+    if candidates:
+        log("[transport] found serial device, using USB")
+        return SerialTransport(candidates[0])
+    log("[transport] no serial, falling back to BLE")
+    return BLETransport()
+
+
+def main():
+    global TRANSPORT
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port")
+    ap.add_argument("--transport", choices=("auto", "serial", "ble"), default="auto")
+    ap.add_argument("--http-port", type=int, default=9877)
+    ap.add_argument("--owner", default=os.environ.get("USER", ""))
+    args = ap.parse_args()
+
+    TRANSPORT = pick_transport(args.transport, args.port)
+
+    def _handshake():
+        if args.owner:
+            send_line({"cmd": "owner", "name": args.owner})
+        send_line({"time": [int(time.time()), tz_offset_seconds()]})
+        if WIDGET_CACHE:
+            schedule_push()
+
+    TRANSPORT.start(on_rx_byte, on_connect=_handshake)
+    threading.Thread(target=keepalive_loop, daemon=True).start()
+    threading.Thread(target=push_loop, daemon=True).start()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), CardHandler)
+    log(f"[http] listening on 127.0.0.1:{args.http_port}")
+    log(f"[ready] claude-card daemon v0.5 — push widgets via POST /widget")
+    try: srv.serve_forever()
+    except KeyboardInterrupt: log("\n[exit] bye")
+
+
+if __name__ == "__main__":
+    main()

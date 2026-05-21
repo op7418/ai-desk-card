@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "scratch.data",
+  "description": "Free-form sticky-note text. The most flexible 记事 component — when nothing else fits, use this.",
+  "type": "object",
+  "required": ["text"],
+  "additionalProperties": false,
+  "properties": {
+    "text":   { "type": "string", "maxLength": 180,
+                "description": "Body text. Can be a sentence or a few lines. Wraps automatically." },
+    "source": { "type": "string", "maxLength": 20,
+                "description": "Who/what produced the note: 'Claude', user's name, or app name." },
+    "age":    { "type": "string", "maxLength": 12,
+                "description": "Human age string: 'just now', '2h', 'yesterday'." }
+  }
+}

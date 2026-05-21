@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ai-tasks.data",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "running":         { "type": "integer", "minimum": 0 },
+    "waiting":         { "type": "integer", "minimum": 0, "description": "waiting for approval" },
+    "blocked":         { "type": "integer", "minimum": 0, "description": "errored / timed out" },
+    "completed_today": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "focus.data",
+  "description": "The USER's current focus task — distinct from ai-status (which is what the AI is doing).",
+  "type": "object",
+  "required": ["task"],
+  "additionalProperties": false,
+  "properties": {
+    "task":     { "type": "string", "maxLength": 60,
+                  "description": "What the user is focused on right now." },
+    "big_text": { "type": "string", "maxLength": 12,
+                  "description": "Pre-formatted countdown / elapsed string, e.g. '12:43', '+3:00 over', or empty." },
+    "subtitle": { "type": "string", "maxLength": 40,
+                  "description": "Small footer line, e.g. 'started 12:18 · 25 min planned'." },
+    "pomodoros_done":    { "type": "integer", "minimum": 0, "maximum": 8 },
+    "pomodoros_planned": { "type": "integer", "minimum": 0, "maximum": 8 }
+  }
+}

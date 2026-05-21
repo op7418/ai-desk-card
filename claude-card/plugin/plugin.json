@@ -1,0 +1,10 @@
+{
+  "name": "claude-card",
+  "version": "0.5.0",
+  "description": "Glanceable e-ink副屏 for Claude Code workflows. Pushes weather / todo / calendar / messages / AI status widgets to an M5Paper V1.1 running the claude-card firmware. Companion to (but independent from) the m5-paper-buddy plugin.",
+  "author": "op7418",
+  "homepage": "https://github.com/op7418/m5-paper-buddy/tree/main/claude-card",
+  "commands": "./commands",
+  "scripts": "./scripts",
+  "skills": "./skills"
+}

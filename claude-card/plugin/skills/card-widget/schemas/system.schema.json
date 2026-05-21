@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "system.data",
+  "description": "Machine resource snapshot — big-number glanceable, not real-time.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "cpu_pct":       { "type": "integer", "minimum": 0, "maximum": 100 },
+    "memory_pct":    { "type": "integer", "minimum": 0, "maximum": 100 },
+    "disk_pct":      { "type": "integer", "minimum": 0, "maximum": 100,
+                       "description": "Used %, not free." },
+    "battery_pct":   { "type": "integer", "minimum": 0, "maximum": 255,
+                       "description": "0-100 for valid value; 255 = no battery (desktop)." },
+    "net_down_kbps": { "type": "integer", "minimum": 0 },
+    "net_up_kbps":   { "type": "integer", "minimum": 0 },
+    "temp_c":        { "type": "integer",
+                       "description": "Use INT16_MIN (-32768) to indicate unavailable." }
+  }
+}
