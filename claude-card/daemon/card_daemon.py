@@ -240,6 +240,15 @@ def _telemetry_listener(line: str):
             s = int(obj["uptime_s"])
             h, m = s // 3600, (s % 3600) // 60
             DEVICE_TELEMETRY["uptime"] = f"{h}h {m}m" if h else f"{m}m"
+            # If uptime dropped vs last seen, device rebooted — our cached
+            # last-frame image is now invalid (device's framebuffer is the
+            # boot splash). Force the next push to be a full frame.
+            prev = DEVICE_TELEMETRY.get("_uptime_s_raw", 0)
+            if s < prev - 5:
+                log(f"[diff] device reboot detected (uptime {prev}s → {s}s) "
+                    f"— resetting frame diff cache")
+                reset_frame_diff()
+            DEVICE_TELEMETRY["_uptime_s_raw"] = s
         except (TypeError, ValueError):
             pass
 
@@ -307,13 +316,22 @@ def _crc32(data: bytes) -> int:
     return binascii.crc32(data) & 0xFFFFFFFF
 
 
-def push_frame_bytes(packed: bytes):
-    """Send a packed 4bpp frame (FRAME_BYTES exactly) via the chunked
-    protocol. Caller is responsible for serialising calls (we hold
-    _FRAME_LOCK)."""
+def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
+    """Send a packed 4bpp frame via the chunked protocol.
+
+    Full frame: packed = FRAME_BYTES, region = None.
+    Region update: packed = w*h/2 bytes, region = (x, y, w, h).
+
+    Caller serialises (we hold _FRAME_LOCK)."""
     global _FRAME_ID
-    if len(packed) != FRAME_BYTES:
-        log(f"[frame] WARN size {len(packed)} != {FRAME_BYTES}")
+    if region is None and len(packed) != FRAME_BYTES:
+        log(f"[frame] WARN full size {len(packed)} != {FRAME_BYTES}")
+    elif region is not None:
+        x, y, w, h = region
+        expected = w * h // 2
+        if len(packed) != expected:
+            log(f"[frame] WARN region size {len(packed)} != {expected} "
+                f"({w}x{h})")
     with _FRAME_LOCK:
         _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
         fid = _FRAME_ID
@@ -327,14 +345,22 @@ def push_frame_bytes(packed: bytes):
         chunks = [packed[i:i + CHUNK] for i in range(0, len(packed), CHUNK)]
 
         t0 = time.time()
-        send_line({"cmd": "frame_begin", "fid": fid, "w": FRAME_W,
-                   "h": FRAME_H, "bpp": 4, "chunks": len(chunks), "crc": crc})
+        if region is None:
+            send_line({"cmd": "frame_begin", "fid": fid, "w": FRAME_W,
+                       "h": FRAME_H, "bpp": 4,
+                       "chunks": len(chunks), "crc": crc})
+        else:
+            x, y, w, h = region
+            send_line({"cmd": "frame_region_begin", "fid": fid,
+                       "x": x, "y": y, "w": w, "h": h, "bpp": 4,
+                       "chunks": len(chunks), "crc": crc})
         for seq, chunk in enumerate(chunks):
             send_line({"cmd": "frame_chunk", "fid": fid, "seq": seq,
                        "data": base64.b64encode(chunk).decode()})
         send_line({"cmd": "frame_end", "fid": fid})
         dt = time.time() - t0
-        log(f"[frame] pushed fid={fid} {len(packed)}B in {len(chunks)} chunks ({dt:.2f}s)")
+        kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
+        log(f"[frame] pushed fid={fid} {len(packed)}B {kind} in {len(chunks)} chunks ({dt:.2f}s)")
 
 
 def render_and_push_sleep():
@@ -395,11 +421,78 @@ def _settings_state() -> dict:
     return state
 
 
+# v0.7 dirty-region diff: remember the last frame we pushed so the next
+# push can compute a bounding box of changed pixels and ship only that.
+# Skips entirely if nothing changed. Full-frame fallback when the diff
+# covers more than DIFF_FULL_THRESHOLD of the canvas.
+_LAST_FRAME_IMG = None
+DIFF_FULL_THRESHOLD = 0.50    # diff area > 50% of canvas → just push full
+DIFF_REGION_ALIGN   = 4       # x/w aligned to multiple of 4 for safe 4bpp packing
+
+
+def _compute_diff(new_img):
+    """Returns (kind, packed_bytes, region_tuple_or_None).
+    kind: 'full' / 'region' / 'noop'.
+    region_tuple: (x, y, w, h) when kind=='region'."""
+    global _LAST_FRAME_IMG
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import card_render
+        from PIL import ImageChops
+    except ImportError as e:
+        log(f"[diff] PIL missing: {e!r} — full-frame only")
+        return "full", card_render.to_4bpp_packed(new_img), None
+
+    if _LAST_FRAME_IMG is None:
+        # First push — must be full so device's framebuffer aligns.
+        _LAST_FRAME_IMG = new_img.copy()
+        return "full", card_render.to_4bpp_packed(new_img), None
+
+    diff_img = ImageChops.difference(_LAST_FRAME_IMG, new_img)
+    bbox = diff_img.getbbox()
+    if bbox is None:
+        return "noop", b"", None
+
+    x0, y0, x1, y1 = bbox
+    # Align x and w to multiple of 4 (safe for any 4bpp panel driver
+    # alignment requirement; expands diff slightly but keeps the pack
+    # path simple).
+    A = DIFF_REGION_ALIGN
+    x0 = (x0 // A) * A
+    x1 = ((x1 + A - 1) // A) * A
+    x1 = min(x1, FRAME_W)
+    w  = x1 - x0
+    h  = y1 - y0
+
+    diff_area = w * h
+    full_area = FRAME_W * FRAME_H
+    if diff_area > full_area * DIFF_FULL_THRESHOLD:
+        log(f"[diff] {diff_area} of {full_area} ({diff_area*100//full_area}%) "
+            f"→ full")
+        _LAST_FRAME_IMG = new_img.copy()
+        return "full", card_render.to_4bpp_packed(new_img), None
+
+    crop = new_img.crop((x0, y0, x1, y1))
+    packed = card_render.to_4bpp_packed(crop)
+    _LAST_FRAME_IMG = new_img.copy()
+    log(f"[diff] region ({x0},{y0} {w}x{h}) = {len(packed)}B "
+        f"vs full {FRAME_BYTES}B ({len(packed)*100//FRAME_BYTES}%)")
+    return "region", packed, (x0, y0, w, h)
+
+
+def reset_frame_diff():
+    """Force the next render_and_push() to send a full frame. Called when
+    we lose sync with the device (firmware restart, daemon restart, etc.)."""
+    global _LAST_FRAME_IMG
+    _LAST_FRAME_IMG = None
+
+
 def render_and_push():
     """Build current widget snapshot, render with PIL, pack 4bpp, push.
     importlib.reload(card_render) on every call so edits to the renderer
     take effect without restarting the daemon. Dispatches to the settings
-    page renderer when IN_SETTINGS is set."""
+    page renderer when IN_SETTINGS is set. Uses dirty-region diff so the
+    typical "one widget changed" path only ships the changed rectangle."""
     global _FRAME_LAST_PUSH, VIEW_HOT_ZONES
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -419,11 +512,15 @@ def render_and_push():
             img = card_render.render_image(_widget_snapshot(),
                                            status=_bar_status())
             VIEW_HOT_ZONES = []
-        packed = card_render.to_4bpp_packed(img)
     except Exception as e:
         log(f"[render] failed: {e!r}")
         return
-    push_frame_bytes(packed)
+
+    kind, packed, region = _compute_diff(img)
+    if kind == "noop":
+        log("[render] no pixel change — skipping push")
+        return
+    push_frame_bytes(packed, region=region)
     _FRAME_LAST_PUSH = time.time()
 
 

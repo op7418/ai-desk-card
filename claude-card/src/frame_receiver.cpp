@@ -13,6 +13,14 @@ uint32_t g_chunks_received   = 0;
 uint32_t g_crc_expected      = 0;
 bool     g_frame_in_progress = false;
 
+// v0.7 region updates: when true, the current frame is a partial region.
+// Coordinates + size describe where this region lives on the panel.
+bool     g_is_region    = false;
+uint16_t g_region_x     = 0;
+uint16_t g_region_y     = 0;
+uint16_t g_region_w     = FRAME_W;
+uint16_t g_region_h     = FRAME_H;
+
 // What we did last. Useful for the boot log.
 const char* g_last_state = "idle";
 
@@ -63,9 +71,41 @@ bool frameHandleCommand(JsonDocument& doc) {
         g_crc_expected    = doc["crc"] | 0;
         g_frame_offset    = 0;
         g_frame_in_progress = true;
+        g_is_region       = false;
+        g_region_x = 0; g_region_y = 0;
+        g_region_w = FRAME_W; g_region_h = FRAME_H;
         g_last_state = "receiving";
         Serial.printf("[frame] begin fid=%u chunks=%u crc=%08x\n",
                       (unsigned)g_frame_id_active,
+                      (unsigned)g_chunks_expected,
+                      (unsigned)g_crc_expected);
+        return true;
+    }
+
+    if (strcmp(cmd, "frame_region_begin") == 0) {
+        // v0.7: partial update — same buffer, but only the region's worth
+        // of pixels arrive in chunks, and the e-ink update at the end
+        // covers just (x, y, w, h).
+        if (!g_frame_buf) {
+            Serial.println("[frame] region_begin without buf");
+            return true;
+        }
+        g_frame_id_active = doc["fid"] | 0;
+        g_chunks_expected = doc["chunks"] | 0;
+        g_chunks_received = 0;
+        g_crc_expected    = doc["crc"] | 0;
+        g_frame_offset    = 0;
+        g_region_x        = doc["x"] | 0;
+        g_region_y        = doc["y"] | 0;
+        g_region_w        = doc["w"] | FRAME_W;
+        g_region_h        = doc["h"] | FRAME_H;
+        g_frame_in_progress = true;
+        g_is_region       = true;
+        g_last_state = "receiving-region";
+        Serial.printf("[frame] region begin fid=%u (%u,%u %ux%u) chunks=%u crc=%08x\n",
+                      (unsigned)g_frame_id_active,
+                      (unsigned)g_region_x, (unsigned)g_region_y,
+                      (unsigned)g_region_w, (unsigned)g_region_h,
                       (unsigned)g_chunks_expected,
                       (unsigned)g_crc_expected);
         return true;
@@ -130,16 +170,35 @@ bool frameHandleCommand(JsonDocument& doc) {
                 return true;
             }
         }
-        if (g_frame_offset != FRAME_BYTES_4BPP) {
-            Serial.printf("[frame] size mismatch: %u != %u\n",
-                          (unsigned)g_frame_offset, (unsigned)FRAME_BYTES_4BPP);
-            // continue anyway — bottom may be cropped
+        size_t expected_bytes = g_is_region
+            ? (size_t)g_region_w * g_region_h / 2
+            : FRAME_BYTES_4BPP;
+        if (g_frame_offset != expected_bytes) {
+            Serial.printf("[frame] size mismatch: got %u, expected %u (%s)\n",
+                          (unsigned)g_frame_offset, (unsigned)expected_bytes,
+                          g_is_region ? "region" : "full");
+            // continue anyway — better partial than nothing
         }
-        Serial.printf("[frame] end fid=%u OK (%u bytes %u chunks) — pushing\n",
-                      (unsigned)fid, (unsigned)g_frame_offset,
-                      (unsigned)g_chunks_received);
-        M5.EPD.WritePartGram4bpp(0, 0, FRAME_W, FRAME_H, g_frame_buf);
-        M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+
+        if (g_is_region) {
+            Serial.printf("[frame] end fid=%u OK region (%u,%u %ux%u) "
+                          "%u bytes %u chunks — pushing\n",
+                          (unsigned)fid,
+                          (unsigned)g_region_x, (unsigned)g_region_y,
+                          (unsigned)g_region_w, (unsigned)g_region_h,
+                          (unsigned)g_frame_offset,
+                          (unsigned)g_chunks_received);
+            M5.EPD.WritePartGram4bpp(g_region_x, g_region_y,
+                                     g_region_w, g_region_h, g_frame_buf);
+            M5.EPD.UpdateArea(g_region_x, g_region_y, g_region_w, g_region_h,
+                              UPDATE_MODE_GC16);
+        } else {
+            Serial.printf("[frame] end fid=%u OK (%u bytes %u chunks) — pushing\n",
+                          (unsigned)fid, (unsigned)g_frame_offset,
+                          (unsigned)g_chunks_received);
+            M5.EPD.WritePartGram4bpp(0, 0, FRAME_W, FRAME_H, g_frame_buf);
+            M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+        }
         g_frame_in_progress = false;
         g_last_state = "displayed";
         return true;

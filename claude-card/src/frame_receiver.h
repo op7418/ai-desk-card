@@ -1,15 +1,22 @@
 // Server-side-render frame receiver. Replaces the on-device TTF renderer.
 //
-// Wire protocol (added in v0.6):
+// Wire protocol (v0.6 full + v0.7 region):
 //
-//   {"cmd":"frame_begin","fid":N,"w":540,"h":960,"bpp":4,"chunks":K,"crc":X}
-//   {"cmd":"frame_chunk","fid":N,"seq":0,"data":"<base64 of 4bpp pixels>"}
-//   ... K chunks total ...
-//   {"cmd":"frame_end","fid":N}
+//   Full frame:
+//     {"cmd":"frame_begin","fid":N,"w":540,"h":960,"bpp":4,"chunks":K,"crc":X}
+//     {"cmd":"frame_chunk","fid":N,"seq":0,"data":"<base64 of 4bpp pixels>"}
+//     ... K chunks total ...
+//     {"cmd":"frame_end","fid":N}
 //
-// After frame_end, we WritePartGram4bpp + UpdateFull(GC16). The 4bpp buffer
-// is 540*960/2 = 259,200 bytes; lives in PSRAM (ps_malloc) so we don't
-// blow heap.
+//   Partial region update (v0.7+):
+//     {"cmd":"frame_region_begin","fid":N,"x":X,"y":Y,"w":W,"h":H,
+//      "bpp":4,"chunks":K,"crc":X}
+//     {"cmd":"frame_chunk",...}    ← same chunk protocol; pixels are W*H/2 bytes total
+//     {"cmd":"frame_end","fid":N}
+//
+// After frame_end we WritePartGram4bpp + UpdateFull (full) or
+// UpdateArea (region). The same 259 KB PSRAM buffer holds full or region
+// payloads; region geometry is stored separately.
 //
 // All UI rendering happens in daemon (PIL). This module is pure plumbing.
 

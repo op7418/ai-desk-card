@@ -881,11 +881,11 @@ def paint_bottom_bar(d: "ImageDraw.ImageDraw", status: dict):
     t = status.get("transport")
     if t:
         pieces.append((t, False))
-    age = status.get("frame_age")
-    if age is not None:
-        age_label = "刚刚" if age < 5 else (
-            f"{age} 秒前" if age < 60 else f"{age // 60} 分钟前")
-        pieces.append((age_label, False))
+    # v0.7: removed live frame_age display from the bar — it shifted on
+    # every push and broke the dirty-region diff (bottom bar always different
+    # → bbox stretched to full canvas → 50% threshold → full re-push). The
+    # "when was this last updated" info is now indirectly visible through
+    # widget content changes; settings page still surfaces uptime explicitly.
 
     cx = pad
     for i, (text, bold) in enumerate(pieces):
@@ -961,19 +961,28 @@ def render_image(widget_snapshot: Iterable[dict],
 def to_4bpp_packed(img: "Image.Image") -> bytes:
     """Convert PIL L-mode image to M5EPD 4bpp packed buffer.
 
+    Uses the image's own size — so this works for full 540×960 frames AND
+    for the cropped sub-rectangles used by v0.7 dirty-region diff. Caller
+    is responsible for using a width that's multiple of 2 (one byte = two
+    horizontally-adjacent pixels).
+
     M5EPD convention: 0=white, 15=black. PIL L: 0=black, 255=white.
-    So invert + quantize. 2 pixels per byte, high nibble first.
+    Invert + quantize. 2 pixels per byte, high nibble first.
     """
     if img.mode != "L":
         img = img.convert("L")
-    if img.size != (CANVAS_W, CANVAS_H):
-        img = img.resize((CANVAS_W, CANVAS_H))
-    pixels = img.tobytes()   # row-major, 1 byte per pixel
-    out = bytearray(CANVAS_W * CANVAS_H // 2)
+    w, h = img.size
+    if w % 2 != 0:
+        # 4bpp packing needs even width — pad right with white.
+        new = Image.new("L", (w + 1, h), 255)
+        new.paste(img, (0, 0))
+        img = new
+        w += 1
+    pixels = img.tobytes()
+    out = bytearray(w * h // 2)
     for i in range(0, len(pixels), 2):
         a = pixels[i]
         b = pixels[i + 1] if i + 1 < len(pixels) else 255
-        # invert + quantize to 4 bits
         na = (255 - a) >> 4
         nb = (255 - b) >> 4
         out[i // 2] = (na << 4) | nb
