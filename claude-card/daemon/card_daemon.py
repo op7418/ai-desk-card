@@ -432,6 +432,91 @@ def _crc32(data: bytes) -> int:
     return binascii.crc32(data) & 0xFFFFFFFF
 
 
+# v0.8 architecture C — BLE→Wi-Fi burst.
+# Battery-mode device keeps the Wi-Fi radio off until we ask. When a frame
+# arrives over BLE, we ask via cmd:wifi_wake_now, wait for the device to
+# advertise its IP back in an ack:status, push the frame as a single HTTP
+# POST, then linger ~30 s before sending wifi_power_down. Back-to-back
+# pushes within the linger window skip the wake step entirely.
+_BURST_LOCK         = threading.Lock()
+_BURST_LAST_PUSH    = 0.0
+_BURST_LINGER_S     = 30.0
+_BURST_WAKE_TIMEOUT = 12.0
+_BURST_HTTP_PORT    = 9880
+
+
+def _verify_wifi_reachable(ip: str) -> bool:
+    """Cheap HTTP GET /status to confirm the device's Wi-Fi side is up."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"http://{ip}:{_BURST_HTTP_PORT}/status", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _wake_wifi_via_ble() -> "tuple|None":
+    """Send cmd:wifi_wake_now via the active BLE transport and wait for
+    the device to report wifi_connected=True with an IP. Returns
+    (ip, port) on success, None on failure.
+
+    Fast path: if a recent telemetry already shows wifi_connected with an
+    IP that responds to /status, skip the wake."""
+    if not isinstance(TRANSPORT, BLETransport):
+        return None
+    ip = DEVICE_TELEMETRY.get("wifi_ip") or ""
+    if DEVICE_TELEMETRY.get("wifi_connected") and ip and _verify_wifi_reachable(ip):
+        log(f"[burst] wifi already up at {ip} — skip wake")
+        return (ip, _BURST_HTTP_PORT)
+
+    log("[burst] sending cmd:wifi_wake_now via BLE")
+    evt = threading.Event()
+    captured = {}
+
+    def _watch(line: str):
+        try: obj = json.loads(line.strip())
+        except Exception: return
+        if not isinstance(obj, dict): return
+        if obj.get("ack") == "status" and obj.get("wifi_connected") \
+                and obj.get("wifi_ip"):
+            captured["ip"] = obj["wifi_ip"]
+            evt.set()
+
+    add_rx_listener(_watch)
+    try:
+        send_line({"cmd": "wifi_wake_now"})
+        evt.wait(timeout=_BURST_WAKE_TIMEOUT)
+    finally:
+        remove_rx_listener(_watch)
+
+    new_ip = captured.get("ip")
+    if not new_ip:
+        log(f"[burst] wifi_wake_now did not produce a wifi_ip in "
+            f"{_BURST_WAKE_TIMEOUT}s — falling back to BLE chunked path")
+        return None
+    log(f"[burst] device Wi-Fi up at {new_ip}")
+    return (new_ip, _BURST_HTTP_PORT)
+
+
+def _burst_power_down_loop():
+    """Background thread: if last burst push was > LINGER seconds ago,
+    tell the device to drop its radio. Saves battery in architecture C."""
+    global _BURST_LAST_PUSH
+    while True:
+        time.sleep(5)
+        with _BURST_LOCK:
+            last = _BURST_LAST_PUSH
+        if last == 0: continue
+        if time.time() - last < _BURST_LINGER_S: continue
+        if not isinstance(TRANSPORT, BLETransport): continue
+        log("[burst] linger expired — sending cmd:wifi_power_down")
+        send_line({"cmd": "wifi_power_down"})
+        with _BURST_LOCK:
+            _BURST_LAST_PUSH = 0
+
+
 def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
     """Send a packed 4bpp frame via the active transport.
 
@@ -463,6 +548,31 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
             log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
         return
+
+    # Architecture C: BLE-primary daemon takes a detour through Wi-Fi for
+    # this push. ~5 s wake overhead on a cold start, ~0 if Wi-Fi was just
+    # used recently (within the LINGER window).
+    if isinstance(TRANSPORT, BLETransport):
+        peer = _wake_wifi_via_ble()
+        if peer:
+            ip, port = peer
+            wifi_xport = WiFiTransport(ip, port)
+            with _FRAME_LOCK:
+                _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
+                fid = _FRAME_ID
+                t0 = time.time()
+                ok = wifi_xport.push_frame_http(packed, region)
+                dt = time.time() - t0
+                kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
+                log(f"[burst] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
+                    f"{'ok' if ok else 'FAIL'}")
+            if ok:
+                with _BURST_LOCK:
+                    global _BURST_LAST_PUSH
+                    _BURST_LAST_PUSH = time.time()
+                return
+            log("[burst] HTTP push failed — falling back to BLE chunked path")
+            # fall through to the chunked-JSON code below
 
     with _FRAME_LOCK:
         _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
@@ -1118,6 +1228,10 @@ def main():
     TRANSPORT.start(on_rx_byte, on_connect=_handshake)
     threading.Thread(target=keepalive_loop, daemon=True).start()
     threading.Thread(target=push_loop, daemon=True).start()
+    if isinstance(TRANSPORT, BLETransport):
+        # Architecture C: only relevant when BLE is the long-lived
+        # transport. USB and Wi-Fi don't have anything to power down.
+        threading.Thread(target=_burst_power_down_loop, daemon=True).start()
 
     srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), CardHandler)
     log(f"[http] listening on 127.0.0.1:{args.http_port}")

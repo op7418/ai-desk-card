@@ -16,7 +16,8 @@
 #include <Arduino.h>
 #include <IPAddress.h>
 
-void wifiInit();
+void wifiInit();           // load NVS credentials; no auto-connect
+void wifiAutoConnect();    // if creds loaded, start connecting now
 void wifiPoll();           // call in loop(); ~free when nothing to do
 bool wifiConnected();
 const char* wifiSSID();    // configured SSID ("" if never provisioned)

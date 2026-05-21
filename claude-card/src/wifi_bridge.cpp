@@ -58,13 +58,24 @@ void beginConnect() {
 
 void wifiInit() {
     loadCreds();
+    // v0.8: caller decides whether to actually connect. Architecture A
+    // calls wifiAutoConnect() right after; architecture C keeps the radio
+    // dark until wifiWakeNow() (triggered by daemon's cmd:wifi_wake_now).
     if (g_ssid[0] != 0) {
-        beginConnect();
+        Serial.printf("[wifi] credentials loaded (ssid='%s'); awaiting connect\n",
+                      g_ssid);
+        g_state = STATE_SLEPT;     // creds present but radio off
     } else {
         Serial.println("[wifi] no credentials in NVS — staying off until "
                        "cmd:wifi_set arrives");
         g_state = STATE_UNCONFIGURED;
     }
+}
+
+void wifiAutoConnect() {
+    if (g_state == STATE_CONNECTED || g_state == STATE_CONNECTING) return;
+    if (g_ssid[0] == 0) return;
+    beginConnect();
 }
 
 void wifiPoll() {

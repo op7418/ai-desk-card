@@ -93,16 +93,23 @@ static void stopMDNS() {
 
 // Emit a status_report JSON line. Daemon's RX parser picks it up and
 // stores fields into DEVICE_TELEMETRY (battery for the bottom bar; fw /
-// mac / uptime_s for the settings page). Safe to call on any cadence.
+// mac / uptime_s for the settings page; wifi info for arch C burst path).
+// Safe to call on any cadence.
 static void emitStatusReport() {
     uint32_t mv = 0;
     int pct = batteryPct(&mv);
-    char buf[192];
+    bool wifi = wifiConnected();
+    char buf[384];
     int n = snprintf(buf, sizeof(buf),
         "{\"ack\":\"status\",\"fw\":\"%s\",\"proto\":%d,\"mac\":\"%s\","
-        "\"uptime_s\":%lu,\"battery_pct\":%d,\"battery_mv\":%u}\n",
+        "\"uptime_s\":%lu,\"battery_pct\":%d,\"battery_mv\":%u,"
+        "\"on_usb\":%s,\"wifi_connected\":%s,"
+        "\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\",\"wifi_rssi\":%d}\n",
         CARD_VERSION, CARD_PROTO, g_macStr,
-        (unsigned long)(millis() / 1000), pct, (unsigned)mv);
+        (unsigned long)(millis() / 1000), pct, (unsigned)mv,
+        isOnUSBPower() ? "true" : "false",
+        wifi ? "true" : "false",
+        wifiSSID(), wifiIPStr(), wifiRSSI());
     if (n > 0) {
         Serial.print(buf);
         bleWrite((const uint8_t*)buf, (size_t)n);
@@ -401,8 +408,11 @@ void setup() {
     // daemon asks via cmd:wifi_wake_now.
     g_was_charging = isOnUSBPower();
     Serial.printf("[power] on_usb=%s\n", g_was_charging ? "yes" : "no");
+    // v0.8: always load credentials from NVS so cmd:wifi_wake_now works
+    // on battery boot. Only auto-connect when on USB (architecture A).
+    wifiInit();
     if (g_was_charging) {
-        wifiInit();
+        wifiAutoConnect();
     } else {
         Serial.println("[wifi] battery mode — radio off until wake_now");
     }
@@ -429,14 +439,23 @@ void loop() {
         if (charging && !wifiConnected()) wifiWakeNow();
     }
 
-    // v0.8: bring mDNS up/down to follow the Wi-Fi link state.
-    if (wifiConnected()) {
+    // v0.8: bring mDNS up/down to follow the Wi-Fi link state. Also fire
+    // an extra status_report on Wi-Fi up so daemon learns the IP fast
+    // (~5 s after wifi_wake_now, vs waiting 60 s for the next periodic).
+    static bool s_wifi_was_up = false;
+    bool wifi_up = wifiConnected();
+    if (wifi_up) {
         if (!httpServerRunning()) httpServerStart();
         startMDNSIfNeeded();
+        if (!s_wifi_was_up) {
+            Serial.println("[wifi] link just came up — emitting status_report");
+            emitStatusReport();
+        }
     } else {
         if (httpServerRunning()) httpServerStop();
         if (g_mdns_up) stopMDNS();
     }
+    s_wifi_was_up = wifi_up;
 
     // Periodic status_report every 60 s. Cheap (one JSON line), keeps the
     // daemon's DEVICE_TELEMETRY warm so the bottom-bar battery indicator
