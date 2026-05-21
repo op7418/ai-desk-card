@@ -49,6 +49,29 @@ NUS_TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 WIDGET_LOCK = threading.Lock()
 WIDGET_CACHE: dict = {}
+_WIDGET_CACHE_PATH = os.path.join(
+    os.environ.get("TMPDIR", "/tmp"), "claude_card_widget_cache.json")
+
+
+def _persist_widget_cache():
+    """Survive daemon restarts (esp. USB↔BLE transport switches). Cache file
+    sits alongside the last-frame PNG."""
+    try:
+        with open(_WIDGET_CACHE_PATH, "w") as f:
+            json.dump(WIDGET_CACHE, f)
+    except Exception as e:
+        log(f"[cache] persist fail: {e!r}")
+
+
+def _load_widget_cache():
+    global WIDGET_CACHE
+    if not os.path.exists(_WIDGET_CACHE_PATH): return
+    try:
+        with open(_WIDGET_CACHE_PATH) as f:
+            WIDGET_CACHE = json.load(f) or {}
+        log(f"[cache] loaded {len(WIDGET_CACHE)} widgets from disk")
+    except Exception as e:
+        log(f"[cache] load fail: {e!r}")
 
 # v0.6.3 — settings page is a full-screen alternate view. Daemon flips
 # IN_SETTINGS when the bottom-bar settings chip is tapped (touch dispatch
@@ -106,6 +129,11 @@ class SerialTransport(Transport):
 
 
 class BLETransport(Transport):
+    # When BLE is the active transport, slow the inter-line cadence so the
+    # ESP32 BLE stack has time to deliver each write to the GATT callback
+    # before the next one arrives. Empirically 100 ms is enough on M5Paper.
+    _NEEDS_INTER_LINE_DELAY = True
+
     def __init__(self, name_prefix="Card-"):
         self._name_prefix = name_prefix
         self._loop = None; self._client = None
@@ -269,10 +297,15 @@ def on_rx_byte(b: int):
         if len(_rx_buf) < 4096: _rx_buf.append(b)
 
 
+SEND_LINE_INTER_DELAY_S = 0.0   # bumped to e.g. 0.1 for BLE if needed
+
+
 def send_line(obj: dict):
     if TRANSPORT is None: return
     data = (json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
     TRANSPORT.write(data)
+    if SEND_LINE_INTER_DELAY_S > 0:
+        time.sleep(SEND_LINE_INTER_DELAY_S)
 
 
 # ---- Widget cache + outbound frame ----
@@ -426,8 +459,36 @@ def _settings_state() -> dict:
 # Skips entirely if nothing changed. Full-frame fallback when the diff
 # covers more than DIFF_FULL_THRESHOLD of the canvas.
 _LAST_FRAME_IMG = None
+_LAST_FRAME_PATH = os.path.join(
+    os.environ.get("TMPDIR", "/tmp"), "claude_card_last_frame.png")
 DIFF_FULL_THRESHOLD = 0.50    # diff area > 50% of canvas → just push full
 DIFF_REGION_ALIGN   = 4       # x/w aligned to multiple of 4 for safe 4bpp packing
+
+
+def _persist_last_frame(img):
+    """Save the last successfully-pushed frame to disk so the diff cache
+    survives daemon restart. Critical for the USB → BLE switch flow: we
+    want the first push after restart to be a region (not a full 260 KB
+    frame BLE struggles with)."""
+    try:
+        img.save(_LAST_FRAME_PATH, format="PNG")
+    except Exception as e:
+        log(f"[diff] persist fail: {e!r}")
+
+
+def _load_persisted_frame():
+    global _LAST_FRAME_IMG
+    if not os.path.exists(_LAST_FRAME_PATH): return
+    try:
+        from PIL import Image
+        img = Image.open(_LAST_FRAME_PATH).convert("L")
+        if img.size == (FRAME_W, FRAME_H):
+            _LAST_FRAME_IMG = img
+            log(f"[diff] loaded persisted frame ({_LAST_FRAME_PATH})")
+        else:
+            log(f"[diff] persisted frame wrong size {img.size}; ignoring")
+    except Exception as e:
+        log(f"[diff] load fail: {e!r}")
 
 
 def _compute_diff(new_img):
@@ -446,6 +507,7 @@ def _compute_diff(new_img):
     if _LAST_FRAME_IMG is None:
         # First push — must be full so device's framebuffer aligns.
         _LAST_FRAME_IMG = new_img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
         return "full", card_render.to_4bpp_packed(new_img), None
 
     diff_img = ImageChops.difference(_LAST_FRAME_IMG, new_img)
@@ -454,6 +516,7 @@ def _compute_diff(new_img):
         return "noop", b"", None
 
     x0, y0, x1, y1 = bbox
+    log(f"[diff] raw bbox: ({x0},{y0})-({x1},{y1}) = {x1-x0}x{y1-y0}")
     # Align x and w to multiple of 4 (safe for any 4bpp panel driver
     # alignment requirement; expands diff slightly but keeps the pack
     # path simple).
@@ -470,11 +533,13 @@ def _compute_diff(new_img):
         log(f"[diff] {diff_area} of {full_area} ({diff_area*100//full_area}%) "
             f"→ full")
         _LAST_FRAME_IMG = new_img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
         return "full", card_render.to_4bpp_packed(new_img), None
 
     crop = new_img.crop((x0, y0, x1, y1))
     packed = card_render.to_4bpp_packed(crop)
     _LAST_FRAME_IMG = new_img.copy()
+    _persist_last_frame(_LAST_FRAME_IMG)
     log(f"[diff] region ({x0},{y0} {w}x{h}) = {len(packed)}B "
         f"vs full {FRAME_BYTES}B ({len(packed)*100//FRAME_BYTES}%)")
     return "region", packed, (x0, y0, w, h)
@@ -485,6 +550,8 @@ def reset_frame_diff():
     we lose sync with the device (firmware restart, daemon restart, etc.)."""
     global _LAST_FRAME_IMG
     _LAST_FRAME_IMG = None
+    try: os.unlink(_LAST_FRAME_PATH)
+    except OSError: pass
 
 
 def render_and_push():
@@ -622,6 +689,7 @@ class CardHandler(BaseHTTPRequestHandler):
             with WIDGET_LOCK:
                 if slot: WIDGET_CACHE.pop(slot, None)
                 else:    WIDGET_CACHE.clear()
+            _persist_widget_cache()
             schedule_push()
             return self._reply(200, {"ok": True, "cleared": slot or "all"})
         return self._reply(404, {"error": f"unknown DELETE {path!r}"})
@@ -650,6 +718,7 @@ class CardHandler(BaseHTTPRequestHandler):
             }
             with WIDGET_LOCK:
                 WIDGET_CACHE[slot] = entry
+            _persist_widget_cache()
             log(f"[widget] {slot} ← {entry['type']}")
             # v0.6: schedule a debounced render+push instead of sending
             # widget_set JSON. The push thread coalesces bursts.
@@ -875,6 +944,10 @@ def main():
     args = ap.parse_args()
 
     TRANSPORT = pick_transport(args.transport, args.port)
+    if getattr(TRANSPORT, "_NEEDS_INTER_LINE_DELAY", False):
+        global SEND_LINE_INTER_DELAY_S
+        SEND_LINE_INTER_DELAY_S = 0.1
+        log(f"[transport] inter-line delay: {SEND_LINE_INTER_DELAY_S*1000:.0f}ms")
 
     def _handshake():
         if args.owner:
@@ -883,6 +956,8 @@ def main():
         if WIDGET_CACHE:
             schedule_push()
 
+    _load_widget_cache()
+    _load_persisted_frame()
     add_rx_listener(_telemetry_listener)
     TRANSPORT.start(on_rx_byte, on_connect=_handshake)
     threading.Thread(target=keepalive_loop, daemon=True).start()
