@@ -1,7 +1,7 @@
 {
   "name": "ai-desk-card",
-  "version": "0.9.0",
-  "description": "AI Desk Card — a single Skill that drives a glanceable e-ink 副屏 (M5Paper 540×960). Server-side-rendered frames pushed over Wi-Fi (0.2 s) / USB (1-32 s) / BLE. Agent reads ../SKILL.md and routes through 7 sub-flows: install / transport / wifi / interests / push / schedule / sleep. 16 widget types (weather / todo / calendar / inbox / pr-queue / ai-status / focus / scratch / next-meeting / break-reminder / deadlines / messages / now-playing / git-status / system / ai-tasks). Claude Code users get slash commands as a convenience layer (/card-onboard, /card-widget, /card-wifi-setup, /card-refresh, /card-sleep, /card-start, /card-stop, /card-status, /card-install) — but the SKILL.md entry point is the primary, agent-agnostic interface.",
+  "version": "0.10.0",
+  "description": "AI Desk Card — a single Skill that drives a glanceable e-ink 副屏. v0.10 supports BOTH M5Paper V1.1 (540×960 grayscale) and M5Paper Color (600×400 Spectra 6 6-color + SHT40 + audio + buttons + RGB LEDs). Server-side-rendered frames pushed over Wi-Fi / USB / BLE. Agent reads ../SKILL.md and routes through 8 sub-flows including the Paper Color profile. 17 widget types incl. Color-exclusive ambient. Claude Code users get slash commands as a convenience layer (/card-onboard, /card-widget, /card-wifi-setup, /card-refresh, /card-sleep, /card-start, /card-stop, /card-status, /card-install) — but the SKILL.md entry point is the primary, agent-agnostic interface.",
   "author": "op7418",
   "homepage": "https://github.com/op7418/ai-desk-card",
   "commands": "./commands",
