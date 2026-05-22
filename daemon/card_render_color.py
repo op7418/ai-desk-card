@@ -48,18 +48,39 @@ COL = {
 }
 
 # ----- font loading ----------------------------------------------------------
-
-_FONT_PATHS = [
-    "/System/Library/Fonts/PingFang.ttc",
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+#
+# Spectra 6's color-aware waveform breaks thin strokes into dither
+# patterns, so default-weight Regular CJK fonts look fuzzy at small
+# sizes. We force a Medium-or-heavier weight everywhere — Spectra 6
+# renders bold glyphs cleanly because the strokes are wide enough to
+# survive quantization.
+#
+# Priority (face index for .ttc files in parens):
+#   1. PingFang.ttc index=4 (PingFang SC Medium) — macOS, best CJK weight
+#   2. STHeiti Medium.ttc                         — macOS fallback
+#   3. Hiragino Sans GB.ttc index=1 (W6 Bold)     — older macOS
+#   4. NotoSansCJK-Bold.ttc                       — Linux
+#   5. wqy-zenhei.ttc                             — Linux fallback
+_FONT_CANDIDATES = [
+    # STHeiti Medium is already medium-weight by default — heavy enough
+    # for Spectra 6's color quantization to render clean strokes. We
+    # used to prefer PingFang.ttc but that path doesn't exist on
+    # macOS 15+ unless CJK locale is set, so we'd silently fall back
+    # here anyway. Skip the dance.
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 1),   # W6 / bold face
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
 ]
 
 def _try_font(size: int) -> ImageFont.ImageFont:
-    for p in _FONT_PATHS:
-        if os.path.exists(p):
-            try: return ImageFont.truetype(p, size)
+    for path, idx in _FONT_CANDIDATES:
+        if not os.path.exists(path): continue
+        try:
+            return ImageFont.truetype(path, size, index=idx)
+        except Exception:
+            try: return ImageFont.truetype(path, size)
             except Exception: pass
     return ImageFont.load_default()
 
@@ -322,23 +343,31 @@ def paint_calendar(d, rect, data, stale=False):
 
 def paint_break_reminder(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "BREAK", accent=COL["yellow"])
-    last = data.get("last_break_min_ago")
     sit = data.get("sitting_min")
     eye = data.get("next_eye_rest_min")
     advice = data.get("advice", "")
 
-    lines = []
-    if last is not None: lines.append(f"上次休息 {last}m 前")
-    if sit  is not None: lines.append(f"已坐 {sit}m")
-    if eye  is not None:
-        eye_txt = f"护眼 {-eye}m 前过期" if eye < 0 else f"下次护眼 {eye}m"
-        lines.append(eye_txt)
-    for i, ln in enumerate(lines[:3]):
-        col = COL["red"] if "过期" in ln or (sit is not None and sit > 60 and "已坐" in ln) else COL["ink"]
-        d.text((cx, cy + 4 + i * 32), ln, fill=col, font=font(20))
+    # Show only the 2 highest-signal lines (drop last_break — implied by
+    # sit). Color stays MINIMAL — red only when truly urgent, body in
+    # ink black for max contrast on e-ink. Green washed out on Spectra 6.
+    primary_lines = []
+    if sit is not None:
+        col = COL["red"] if sit > 60 else COL["ink"]
+        primary_lines.append((f"已坐 {sit} 分钟", col))
+    if eye is not None:
+        if eye < 0:
+            primary_lines.append((f"护眼超时 {-eye} 分钟", COL["red"]))
+        else:
+            primary_lines.append((f"下次护眼 {eye} 分钟", COL["ink"]))
+
+    for i, (txt, col) in enumerate(primary_lines[:2]):
+        d.text((cx, cy + 6 + i * 38), txt, fill=col, font=font(24))
+
     if advice:
-        adv = _truncate(d, advice, font(22), cw)
-        d.text((cx, cy + ch - 32), adv, fill=COL["green"], font=font(22))
+        adv = _truncate(d, advice, font(24), cw)
+        # Black for readability — drop the green decoration that
+        # quantized poorly on Spectra 6.
+        d.text((cx, cy + ch - 36), adv, fill=COL["ink"], font=font(24))
 
 
 PAINTERS = {
