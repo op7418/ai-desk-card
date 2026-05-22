@@ -10,6 +10,7 @@
 #include <M5Unified.h>
 #include <ArduinoJson.h>
 #include <esp_mac.h>
+#include <esp_sleep.h>
 
 // Forward — defined in frame_buffer.cpp. Receives a complete RGB565 frame
 // (w*h*2 bytes) and renders to the M5Canvas.
@@ -187,6 +188,50 @@ void handleClient(WiFiClient c) {
     if (method == "GET"  && basePath == "/status")           handleStatus(c);
     else if (method == "POST" && basePath == "/provision-wifi") handleProvisionWifi(c, contentLen);
     else if (method == "POST" && basePath == "/frame")          handleFrame(c, path, contentLen);
+    else if (method == "POST" && basePath == "/cmd") {
+        String body; body.reserve(contentLen + 1);
+        size_t got = 0;
+        uint32_t deadline = millis() + 2000;
+        while (got < contentLen && millis() < deadline) {
+            int b = c.read();
+            if (b < 0) { delay(1); continue; }
+            body += (char)b; got++;
+        }
+        JsonDocument doc;
+        if (deserializeJson(doc, body)) {
+            writeError(c, 400, "Bad Request", "invalid JSON");
+        } else {
+            const char* cmd = doc["cmd"] | "";
+            if (strcmp(cmd, "sleep_now") == 0) {
+                // Reply BEFORE entering deep sleep, then let the panel
+                // refresh settle, then sleep.
+                writeStatus(c, 200, "OK", "application/json",
+                            "{\"ack\":\"sleep_now\",\"ok\":true}");
+                c.flush(); c.stop();
+                Serial.println("[cmd] sleep_now — settling panel + deep sleep");
+                // Spectra 6 needs ~2.5 s to finish its full refresh waveform
+                // before we cut power; otherwise the panel can stop mid-cycle
+                // and leave colored ghosts.
+                delay(2500);
+                Serial.flush();
+                // Enable button A/B/C as wake source (RTC GPIO).
+                // BtnA=G10, BtnB=G9, BtnC=G1. All three trigger on LOW.
+                esp_sleep_enable_ext1_wakeup(
+                    (1ULL << 10) | (1ULL << 9) | (1ULL << 1),
+                    ESP_EXT1_WAKEUP_ANY_LOW);
+                esp_deep_sleep_start();
+                return;   // unreachable
+            } else if (strcmp(cmd, "restart") == 0) {
+                writeStatus(c, 200, "OK", "application/json",
+                            "{\"ack\":\"restart\"}");
+                c.flush(); c.stop();
+                delay(200); ESP.restart();
+                return;
+            } else {
+                writeError(c, 400, "Bad Request", "unknown cmd");
+            }
+        }
+    }
     else if (method == "POST" && basePath == "/beep") {
         // Body: { "pattern": "chime|urgent|alert" }  or  { "freq": Hz, "ms": dur }
         String body; body.reserve(contentLen + 1);

@@ -107,14 +107,20 @@ def post_frame(ip: str, img, port: int = 9880,
 
 
 def _load_renderer():
-    import importlib.util
+    return _load_renderer_module("card_render_color")
+
+
+def _load_renderer_module(name: str):
+    import importlib.util, sys as _sys
     here = os.path.dirname(os.path.abspath(__file__))
+    daemon_dir = os.path.join(here, "..", "daemon")
+    if daemon_dir not in _sys.path:
+        _sys.path.insert(0, daemon_dir)
     spec = importlib.util.spec_from_file_location(
-        "card_render_color",
-        os.path.join(here, "..", "daemon", "card_render_color.py"))
-    crc = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(crc)
-    return crc
+        name, os.path.join(daemon_dir, f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _fetch_device_status(ip: str, port: int = 9880) -> dict:
@@ -221,6 +227,8 @@ def main():
     ap.add_argument("--port", type=int, default=9880)
     ap.add_argument("--test", choices=["stripes", "demo", "ambient"],
                     help="Built-in pattern: stripes (color test), demo (4 schedule widgets), ambient (SHT40 + AI status + PRs + break)")
+    ap.add_argument("--view", choices=["settings", "sleep"],
+                    help="Special view: settings (device status page), sleep (business card + deep sleep)")
     ap.add_argument("--image", help="Path to PNG/JPG to push (auto-resized to 600×400)")
     ap.add_argument("--save", help="Save the rendered image locally before pushing")
     ap.add_argument("--beep", choices=["chime", "urgent", "alert"],
@@ -228,7 +236,15 @@ def main():
     args = ap.parse_args()
 
     device_status = _fetch_device_status(args.ip, args.port)
-    if args.test == "stripes":
+    sleep_after = False
+    if args.view == "settings":
+        crsc = _load_renderer_module("card_render_settings_color")
+        img = crsc.render_settings(device_status)
+    elif args.view == "sleep":
+        crsc = _load_renderer_module("card_render_sleep_color")
+        img = crsc.render_sleep()
+        sleep_after = True
+    elif args.test == "stripes":
         img = test_stripes_image()
     elif args.test == "demo":
         img = demo_widgets_image(device_status)
@@ -249,6 +265,22 @@ def main():
         print(f"[host] saved render to {args.save}")
 
     post_frame(args.ip, img, args.port)
+
+    if sleep_after:
+        # Give the panel ~2 s to finish settling before the device's own
+        # sleep_now path takes over (which adds its own 2.5 s settle).
+        time.sleep(2)
+        import json as _json
+        body = _json.dumps({"cmd": "sleep_now"}).encode()
+        req = urllib.request.Request(
+            f"http://{args.ip}:{args.port}/cmd",
+            data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=4) as r:
+                print(f"[sleep] cmd:sleep_now → {r.status}")
+        except Exception as e:
+            print(f"[sleep] error: {e!r}")
 
     if args.beep:
         import json as _json

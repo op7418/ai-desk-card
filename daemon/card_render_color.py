@@ -391,22 +391,49 @@ def paint_empty(d, rect, label="—"):
     d.text((x + (w - lw) // 2, y + h // 2 - 14), label, fill=COL["muted"], font=f)
 
 def paint_status_bar(d, status: dict):
+    """Bottom 34 px strip. LEFT = physical button hints (Color exclusive —
+    V1.1 had tappable chips). RIGHT = battery / wifi / time, ordered by
+    glance-priority. Yellow accent for button letters to make A/B/C
+    instantly distinguishable from the body text."""
     y = CANVAS_H - BAR_H
     d.rectangle([0, y, CANVAS_W, CANVAS_H], fill=COL["ink"])
+
+    # LEFT — three button hints
+    btn_hints = [
+        ("A", "刷新"),
+        ("B", "设置"),
+        ("C", "睡眠"),
+    ]
+    f_letter = font(20)
+    f_label  = font(20)
+    x = 12
+    for letter, label in btn_hints:
+        d.text((x, y + 4), letter, fill=COL["yellow"], font=f_letter)
+        lw = d.textlength(letter, font=f_letter)
+        d.text((x + lw + 4, y + 4), label, fill=COL["paper"], font=f_label)
+        x += lw + 4 + int(d.textlength(label, font=f_label)) + 18
+
+    # RIGHT — battery / wifi / time, right-aligned
     bp = status.get("battery_pct")
     wifi = status.get("wifi", "")
     ts = status.get("time", "")
-    pieces = []
+    right_pieces = []
+    if ts: right_pieces.append((ts, COL["paper"]))
+    if wifi:
+        # truncate ssid if huge
+        if len(wifi) > 12: wifi = wifi[:11] + "…"
+        right_pieces.append((wifi, COL["paper"]))
     if bp is not None:
         col = COL["red"] if bp <= 20 else COL["paper"]
-        pieces.append((f"{bp}%", col))
-    if wifi: pieces.append((wifi, COL["paper"]))
-    if ts:   pieces.append((ts, COL["paper"]))
+        right_pieces.append((f"{bp}%", col))
+    # measure total width, place from right edge
     f = font(20)
-    x = 14
-    for txt, col in pieces:
-        d.text((x, y + 4), txt, fill=col, font=f)
-        x += int(d.textlength(txt, font=f)) + 22
+    total_w = sum(int(d.textlength(t, font=f)) for t, _ in right_pieces)
+    total_w += 22 * (len(right_pieces) - 1) if right_pieces else 0
+    rx = CANVAS_W - 12 - total_w
+    for i, (txt, col) in enumerate(right_pieces):
+        d.text((rx, y + 4), txt, fill=col, font=f)
+        rx += int(d.textlength(txt, font=f)) + 22
 
 # ----- public API ------------------------------------------------------------
 
