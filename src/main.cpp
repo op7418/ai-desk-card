@@ -26,6 +26,23 @@
 // /firmware-probe compares this against its own to decide compatibility.
 #define CARD_PROTO 1
 
+// v0.9: RTC slow memory survives soft resets (and most "reboots" that
+// aren't a full power-off). Set after first frame display so subsequent
+// boots can skip the EPD.Clear() + splash and let the e-ink keep showing
+// whatever was last on screen. Cleared back to 0 only on real power-off
+// (battery dies / unplug while not on USB).
+RTC_DATA_ATTR uint32_t g_lastContentMagic = 0;
+static const uint32_t CONTENT_MAGIC = 0xDE5CCA8D;   // "DESK CARD"
+
+// Called from frame_receiver after the first successful display this boot
+// so subsequent boots can preserve the panel content.
+extern "C" void markContentDisplayed() {
+    if (g_lastContentMagic != CONTENT_MAGIC) {
+        g_lastContentMagic = CONTENT_MAGIC;
+        Serial.println("[boot] content magic set — future boots will preserve last frame");
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Serial / BLE protocol dispatch
 // ----------------------------------------------------------------------------
@@ -498,18 +515,56 @@ static void paintPasskeyOverlay(uint32_t pk) {
     Serial.printf("[ble] passkey UI displayed: %06lu\n", (unsigned long)pk);
 }
 
+// First-boot splash — shown only when the device has never displayed
+// content before (RTC magic absent). After the first daemon push, the
+// magic is set and subsequent boots skip this entirely, preserving the
+// last frame on the panel.
 static void paintBootSplash() {
     M5EPD_Canvas c(&M5.EPD);
     c.createCanvas(540, 960);
-    c.fillCanvas(0);   // white
+    c.fillCanvas(0);    // white
     c.setTextColor(15);
+
+    // ---- Title block ----
     c.setTextDatum(CC_DATUM);
-    c.setTextSize(28);
-    c.drawString("ai-desk-card", 270, 440);
-    c.setTextSize(20);
-    c.drawString("waiting for daemon...", 270, 490);
-    c.setTextSize(16);
-    c.drawString(CARD_VERSION, 270, 940);
+    c.setTextSize(4);
+    c.drawString("AI Desk Card", 270, 120);
+    c.setTextSize(2);
+    c.drawString(CARD_VERSION, 270, 170);
+
+    // ---- Divider ----
+    c.drawLine(60, 220, 480, 220, 15);
+
+    // ---- Setup hint ----
+    c.setTextDatum(TL_DATUM);
+    c.setTextSize(3);
+    c.drawString("First time setup", 60, 270);
+
+    c.setTextSize(2);
+    c.drawString("1. Install the Skill on your", 60, 340);
+    c.drawString("   AI Agent (Claude / Codex /", 60, 370);
+    c.drawString("   Cursor):", 60, 400);
+
+    c.drawRect(40, 440, 460, 130, 15);
+    c.setTextSize(2);
+    c.drawString("github.com/op7418/", 60, 470);
+    c.drawString("  ai-desk-card", 60, 500);
+    c.drawString("(npx skills add ...)", 60, 535);
+
+    c.setTextSize(2);
+    c.drawString("2. Ask the agent:", 60, 610);
+    c.setTextSize(2);
+    c.drawString("\"Set up my desk card.\"", 60, 645);
+
+    c.drawString("3. Pair this device:", 60, 715);
+    c.setTextSize(2);
+    c.drawString(String("   BLE: ") + btName, 60, 750);
+
+    // ---- Bottom status ----
+    c.setTextDatum(BC_DATUM);
+    c.setTextSize(2);
+    c.drawString("waiting for daemon...", 270, 920);
+
     c.pushCanvas(0, 0, UPDATE_MODE_GC16);
     c.deleteCanvas();
 }
@@ -527,13 +582,27 @@ void setup() {
 
     M5.EPD.SetRotation(90);
     M5.TP.SetRotation(90);
-    M5.EPD.Clear(true);
+
+    bool hadContent = (g_lastContentMagic == CONTENT_MAGIC);
+    if (!hadContent) {
+        // First boot ever (or after deep power-off) — wipe to white and
+        // paint the install splash so a new user knows what to do.
+        Serial.println("[boot] no prior content — painting install splash");
+        M5.EPD.Clear(true);
+    } else {
+        // E-ink physically retains the last frame at 0 W. Skip the Clear
+        // + splash so the panel keeps showing whatever the user last saw.
+        // Daemon's first push (~2 s after reconnect) will refresh anyway.
+        Serial.println("[boot] previous content preserved on e-ink, skipping splash");
+    }
 
     if (!frameReceiverInit()) {
         Serial.println("[boot] frameReceiverInit FAILED — staying in waiting state");
     }
 
-    paintBootSplash();
+    if (!hadContent) {
+        paintBootSplash();
+    }
 
     startBt();
     Serial.printf("[ble] advertising as '%s'\n", btName);

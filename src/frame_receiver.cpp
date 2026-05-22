@@ -63,6 +63,10 @@ const char* frameReceiverStateName() { return g_last_state; }
 uint8_t* frameBuffer()      { return g_frame_buf; }
 size_t   frameBufferSize()  { return FRAME_BYTES_4BPP; }
 
+// v0.9: defined in main.cpp — sets RTC magic so next boot preserves the
+// panel content instead of repainting the install splash.
+extern "C" void markContentDisplayed();
+
 void frameDisplay(int x, int y, int w, int h) {
     if (!g_frame_buf) return;
     bool full = (x == 0 && y == 0 && w == FRAME_W && h == FRAME_H);
@@ -73,6 +77,7 @@ void frameDisplay(int x, int y, int w, int h) {
         M5.EPD.UpdateArea(x, y, w, h, UPDATE_MODE_GC16);
     }
     g_last_state = full ? "displayed" : "displayed-region";
+    markContentDisplayed();
 }
 
 bool frameAcquireBuffer() {
