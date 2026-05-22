@@ -22,7 +22,7 @@ CANVAS_W = 600
 CANVAS_H = 400
 
 GAP = 6
-BAR_H = 28
+BAR_H = 34
 TITLE_H = 32
 SLOT_W = (CANVAS_W - GAP * 3) // 2
 SLOT_H = (CANVAS_H - BAR_H - GAP * 3) // 2
@@ -94,22 +94,22 @@ def paint_weather(d, rect, data, stale=False):
     forecast = data.get("forecast") or []
 
     # Location top-right of title bar
-    f_loc = font(18)
+    f_loc = font(22)
     lw = d.textlength(loc, font=f_loc)
-    d.text((x + w - 12 - lw, y + 5), loc, fill=COL["paper"], font=f_loc)
+    d.text((x + w - 12 - lw, y + 3), loc, fill=COL["paper"], font=f_loc)
 
     # Big temperature
     if temp is not None:
         tx = f"{int(round(temp))}°"
         d.text((cx, cy + 4), tx, fill=COL["ink"], font=font(64))
     # Condition next to temp
-    d.text((cx + 110, cy + 28), cond, fill=COL["muted"], font=font(24))
+    d.text((cx + 120, cy + 28), cond, fill=COL["ink"], font=font(28))
 
     # 1-line forecast (only first day to keep readable)
     if forecast:
         f = forecast[0]
-        line = f"{f.get('day','')}  {f.get('high','')}° / {f.get('low','')}°  {f.get('condition','')}"
-        d.text((cx, cy + ch - 30), line, fill=COL["ink"], font=font(20))
+        line = f"{f.get('day','')}  {f.get('high','')}/{f.get('low','')}°  {f.get('condition','')}"
+        d.text((cx, cy + ch - 32), line, fill=COL["ink"], font=font(24))
 
 def paint_focus(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "FOCUS", accent=COL["ink"])
@@ -138,10 +138,10 @@ def paint_focus(d, rect, data, stale=False):
             color = COL["green"] if i < done else COL["muted"]
             d.ellipse([dx, dy - 6, dx + 12, dy + 6], fill=color)
             dx += 18
-    # Subtitle right side of dots
+    # Subtitle right side of dots — bumped to 20pt; drop if too long
     if sub:
-        sub_t = _truncate(d, sub, font(16), cw - 130)
-        d.text((cx + 130, cy + ch - 24), sub_t, fill=COL["muted"], font=font(16))
+        sub_t = _truncate(d, sub, font(20), cw - 130)
+        d.text((cx + 130, cy + ch - 28), sub_t, fill=COL["ink"], font=font(20))
 
 def paint_next_meeting(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "NEXT", accent=COL["yellow"])
@@ -163,13 +163,13 @@ def paint_next_meeting(d, rect, data, stale=False):
     title_t = _truncate(d, title, font(22), cw)
     d.text((cx, cy + 50), title_t, fill=COL["ink"], font=font(22))
 
-    # Attendees + location
+    # Attendees + location — bumped to 20pt readable
     if attendees:
-        line = _truncate(d, attendees, font(16), cw)
-        d.text((cx, cy + ch - 44), line, fill=COL["muted"], font=font(16))
+        line = _truncate(d, attendees, font(20), cw)
+        d.text((cx, cy + ch - 52), line, fill=COL["ink"], font=font(20))
     if location:
-        line = _truncate(d, location, font(16), cw)
-        d.text((cx, cy + ch - 22), line, fill=COL["muted"], font=font(16))
+        line = _truncate(d, location, font(20), cw)
+        d.text((cx, cy + ch - 26), line, fill=COL["ink"], font=font(20))
 
 def paint_todo(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "TODO", accent=COL["green"])
@@ -177,8 +177,8 @@ def paint_todo(d, rect, data, stale=False):
     items = data.get("items") or []
     title = data.get("title", "")
     if title:
-        tw = d.textlength(title, font=font(18))
-        d.text((x + w - 12 - tw, y + 6), title, fill=COL["paper"], font=font(18))
+        tw = d.textlength(title, font=font(22))
+        d.text((x + w - 12 - tw, y + 3), title, fill=COL["paper"], font=font(22))
 
     tag_colors = {
         "today":    COL["red"],
@@ -188,17 +188,15 @@ def paint_todo(d, rect, data, stale=False):
         "later":    COL["muted"],
         "":         COL["ink"],
     }
-    # Up to 2 items at this font size (3 was cramped)
+    # Up to 2 items. Color of bullet conveys tag — drop the tag text
+    # (was 15pt, unreadable on Spectra 6).
     for i, it in enumerate(items[:2]):
-        ty = cy + 4 + i * 60
+        ty = cy + 8 + i * 64
         tag = it.get("tag", "") or ""
         color = tag_colors.get(tag, COL["ink"])
-        # Big bullet
-        d.ellipse([cx, ty + 10, cx + 14, ty + 24], fill=color)
-        text = _truncate(d, it.get("text", ""), font(22), cw - 24)
-        d.text((cx + 22, ty + 4), text, fill=COL["ink"], font=font(22))
-        if tag:
-            d.text((cx + 22, ty + 30), tag, fill=color, font=font(15))
+        d.ellipse([cx, ty + 8, cx + 18, ty + 26], fill=color)
+        text = _truncate(d, it.get("text", ""), font(24), cw - 28)
+        d.text((cx + 28, ty + 2), text, fill=COL["ink"], font=font(24))
 
 def paint_ambient(d, rect, data, stale=False):
     """Local temperature + humidity from the device's SHT40 sensor.
@@ -209,19 +207,18 @@ def paint_ambient(d, rect, data, stale=False):
     age_s = data.get("age_s")
 
     # Two halves: temperature left, humidity right
-    half_w = cw // 2
     if temp is not None:
         tx = f"{temp:.1f}°"
-        d.text((cx, cy + 4), tx, fill=COL["ink"], font=font(56))
-        d.text((cx, cy + 70), "温度", fill=COL["muted"], font=font(18))
+        d.text((cx, cy + 0), tx, fill=COL["ink"], font=font(64))
+        d.text((cx, cy + 80), "温度", fill=COL["ink"], font=font(22))
     if humid is not None:
         hx = f"{int(round(humid))}%"
-        hw = d.textlength(hx, font=font(56))
-        d.text((cx + cw - hw, cy + 4), hx, fill=COL["blue"], font=font(56))
-        d.text((cx + cw - 40, cy + 70), "湿度", fill=COL["muted"], font=font(18))
-    if age_s is not None and age_s > 60:
-        d.text((cx, cy + ch - 20), f"读数 {age_s}s 前",
-               fill=COL["muted"], font=font(14))
+        hw = d.textlength(hx, font=font(64))
+        d.text((cx + cw - hw, cy + 0), hx, fill=COL["blue"], font=font(64))
+        lw = d.textlength("湿度", font=font(22))
+        d.text((cx + cw - lw, cy + 80), "湿度", fill=COL["ink"], font=font(22))
+    # Drop the "读数 N s 前" footnote — unreadable at small size and
+    # not critical to the glance.
 
 def paint_ai_status(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "AI", accent=COL["blue"])
@@ -234,25 +231,25 @@ def paint_ai_status(d, rect, data, stale=False):
     limit = ctx.get("limit")
 
     if session:
-        sw = d.textlength(session, font=font(18))
-        d.text((x + w - 12 - sw, y + 6), session, fill=COL["paper"], font=font(18))
+        sw = d.textlength(session, font=font(22))
+        d.text((x + w - 12 - sw, y + 3), session, fill=COL["paper"], font=font(22))
 
     if model:
-        d.text((cx, cy + 4), model, fill=COL["ink"], font=font(26))
+        d.text((cx, cy + 4), model, fill=COL["ink"], font=font(28))
     if task:
-        task_t = _truncate(d, task, font(20), cw)
-        d.text((cx, cy + 38), task_t, fill=COL["ink"], font=font(20))
+        task_t = _truncate(d, task, font(22), cw)
+        d.text((cx, cy + 44), task_t, fill=COL["ink"], font=font(22))
 
     # Context bar
     if used and limit:
-        bar_y = cy + ch - 38
-        d.text((cx, bar_y - 22), f"ctx {used // 1000}K / {limit // 1000}K",
-               fill=COL["muted"], font=font(16))
-        d.rectangle([cx, bar_y, cx + cw, bar_y + 14],
+        bar_y = cy + ch - 30
+        d.text((cx, bar_y - 28), f"ctx {used // 1000}K / {limit // 1000}K",
+               fill=COL["ink"], font=font(20))
+        d.rectangle([cx, bar_y, cx + cw, bar_y + 16],
                     outline=COL["ink"], width=1)
         filled = int(cw * used / limit)
         fill_color = COL["red"] if used / limit > 0.9 else COL["ink"]
-        d.rectangle([cx, bar_y, cx + filled, bar_y + 14], fill=fill_color)
+        d.rectangle([cx, bar_y, cx + filled, bar_y + 16], fill=fill_color)
 
 def paint_pr_queue(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "PRS", accent=COL["red"])
@@ -263,11 +260,12 @@ def paint_pr_queue(d, rect, data, stale=False):
 
     # Counts top-right of header
     counts = f"{review} / {yours}"
-    cwidth = d.textlength(counts, font=font(20))
-    d.text((x + w - 12 - cwidth, y + 4), counts,
-           fill=COL["paper"], font=font(20))
+    cwidth = d.textlength(counts, font=font(22))
+    d.text((x + w - 12 - cwidth, y + 3), counts,
+           fill=COL["paper"], font=font(22))
 
-    # Up to 2 items
+    # Up to 2 items. Color of #number conveys status — drop the
+    # status word (was 14pt, unreadable).
     status_colors = {
         "review": COL["red"],
         "yours": COL["blue"],
@@ -276,19 +274,16 @@ def paint_pr_queue(d, rect, data, stale=False):
         "": COL["muted"],
     }
     for i, it in enumerate(items[:2]):
-        py = cy + 4 + i * 60
+        py = cy + 8 + i * 64
         num = it.get("number", "")
         title = it.get("text") or it.get("title", "")
         status = it.get("status", "")
         col = status_colors.get(status, COL["ink"])
-        d.text((cx, py), num, fill=col, font=font(22))
-        nw = d.textlength(num, font=font(22))
-        title_t = _truncate(d, title, font(20), cw - nw - 16)
+        d.text((cx, py), num, fill=col, font=font(24))
+        nw = d.textlength(num, font=font(24))
+        title_t = _truncate(d, title, font(22), cw - nw - 16)
         d.text((cx + nw + 12, py + 2), title_t,
-               fill=COL["ink"], font=font(20))
-        if status:
-            d.text((cx + nw + 12, py + 30), status,
-                   fill=col, font=font(14))
+               fill=COL["ink"], font=font(22))
 
 def paint_deadlines(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "DEADLINES", accent=COL["red"])
@@ -306,7 +301,7 @@ def paint_deadlines(d, rect, data, stale=False):
         d.text((tx, py + 2), title, fill=col, font=font(20))
         due = it.get("due_label", "")
         if due:
-            d.text((tx, py + 30), due, fill=COL["muted"], font=font(16))
+            d.text((tx, py + 30), due, fill=COL["ink"], font=font(20))
 
 def paint_calendar(d, rect, data, stale=False):
     cx, cy, cw, ch = _slot_chrome(d, rect, "TODAY", accent=COL["yellow"])
@@ -315,8 +310,8 @@ def paint_calendar(d, rect, data, stale=False):
     now_iso = data.get("now_iso", "")
     if now_iso and "T" in now_iso:
         nowhm = now_iso.split("T")[1][:5]
-        nw = d.textlength(nowhm, font=font(18))
-        d.text((x + w - 12 - nw, y + 6), nowhm, fill=COL["ink"], font=font(18))
+        nw = d.textlength(nowhm, font=font(22))
+        d.text((x + w - 12 - nw, y + 3), nowhm, fill=COL["paper"], font=font(22))
     for i, ev in enumerate(events[:3]):
         py = cy + 4 + i * 40
         start = ev.get("start", "")
@@ -342,8 +337,8 @@ def paint_break_reminder(d, rect, data, stale=False):
         col = COL["red"] if "过期" in ln or (sit is not None and sit > 60 and "已坐" in ln) else COL["ink"]
         d.text((cx, cy + 4 + i * 32), ln, fill=col, font=font(20))
     if advice:
-        adv = _truncate(d, advice, font(18), cw)
-        d.text((cx, cy + ch - 28), adv, fill=COL["green"], font=font(18))
+        adv = _truncate(d, advice, font(22), cw)
+        d.text((cx, cy + ch - 32), adv, fill=COL["green"], font=font(22))
 
 
 PAINTERS = {
@@ -378,11 +373,11 @@ def paint_status_bar(d, status: dict):
         pieces.append((f"{bp}%", col))
     if wifi: pieces.append((wifi, COL["paper"]))
     if ts:   pieces.append((ts, COL["paper"]))
-    f = font(18)
-    x = 12
+    f = font(20)
+    x = 14
     for txt, col in pieces:
         d.text((x, y + 4), txt, fill=col, font=f)
-        x += int(d.textlength(txt, font=f)) + 20
+        x += int(d.textlength(txt, font=f)) + 22
 
 # ----- public API ------------------------------------------------------------
 
