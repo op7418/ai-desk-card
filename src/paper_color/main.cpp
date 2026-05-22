@@ -159,17 +159,17 @@ void loop() {
     }
     httpServerPoll();
 
-    // Buttons → daemon dispatch. PaperColor's 3 user buttons are laid
-    // out unusually (one top + two bottom row), so action mapping is
-    // based on physical position, not M5's A/B/C naming:
-    //   M5.BtnA (G10, TOP)         → sleep   (separated, intentional)
-    //   M5.BtnB (G9,  BOTTOM-LEFT) → refresh (most-pressed, accessible)
-    //   M5.BtnC (G1,  BOTTOM-MID)  → settings (occasional)
-    // The 4th button (bottom-right) is the AXP power button — handled
-    // in hardware, no GPIO event.
-    if (M5.BtnA.wasClicked()) { audioBeepChime();  emitButtonEvent("top",          "sleep");    }
-    if (M5.BtnB.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-left",  "refresh");  }
-    if (M5.BtnC.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-mid",   "settings"); }
+    // Buttons → daemon dispatch. PaperColor's M5.BtnA/B/C → physical
+    // position is REVERSED from M5 convention (verified on hardware
+    // 2026-05-22):
+    //   M5.BtnA (G10) = BOTTOM-LEFT  → refresh
+    //   M5.BtnB (G9)  = BOTTOM-MID   → settings
+    //   M5.BtnC (G1)  = TOP (alone)  → sleep
+    // 4th button (bottom-right) is the AXP power key — long-press to
+    // power off / short-press to wake from deep sleep.
+    if (M5.BtnA.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-left", "refresh");  }
+    if (M5.BtnB.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-mid",  "settings"); }
+    if (M5.BtnC.wasClicked()) { audioBeepChime();  emitButtonEvent("top",         "sleep");    }
 
     // SHT40 ambient: read every 30 s. Cheap I2C, doesn't block panel.
     static uint32_t s_lastSht = 0;
