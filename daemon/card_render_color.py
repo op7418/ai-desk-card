@@ -398,18 +398,20 @@ def paint_status_bar(d, status: dict):
     y = CANVAS_H - BAR_H
     d.rectangle([0, y, CANVAS_W, CANVAS_H], fill=COL["ink"])
 
-    # LEFT — three button hints
+    # LEFT — button hints by physical position. PaperColor's 3 user
+    # buttons aren't in a row: top one alone + two on bottom. So we
+    # label by location instead of M5's internal A/B/C.
     btn_hints = [
-        ("A", "刷新"),
-        ("B", "设置"),
-        ("C", "睡眠"),
+        ("顶", "睡眠"),
+        ("左", "刷新"),
+        ("中", "设置"),
     ]
-    f_letter = font(20)
-    f_label  = font(20)
+    f_pos   = font(20)
+    f_label = font(20)
     x = 12
-    for letter, label in btn_hints:
-        d.text((x, y + 4), letter, fill=COL["yellow"], font=f_letter)
-        lw = d.textlength(letter, font=f_letter)
+    for pos, label in btn_hints:
+        d.text((x, y + 4), pos, fill=COL["yellow"], font=f_pos)
+        lw = d.textlength(pos, font=f_pos)
         d.text((x + lw + 4, y + 4), label, fill=COL["paper"], font=f_label)
         x += lw + 4 + int(d.textlength(label, font=f_label)) + 18
 

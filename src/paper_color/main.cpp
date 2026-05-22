@@ -159,13 +159,17 @@ void loop() {
     }
     httpServerPoll();
 
-    // Phase 4: buttons → daemon dispatch. Mapping mirrors the V1.1
-    // bottom-bar chip semantics so daemon-side actions can be shared.
-    // Each button also plays a DISTINCT preset sound — gives instant
-    // physical→logical mapping verification (no need to read serial).
-    if (M5.BtnA.wasClicked()) { audioBeepChime();  emitButtonEvent("A", "refresh");  }
-    if (M5.BtnB.wasClicked()) { audioBeepAlert();  emitButtonEvent("B", "settings"); }
-    if (M5.BtnC.wasClicked()) { audioBeepUrgent(); emitButtonEvent("C", "sleep");    }
+    // Buttons → daemon dispatch. PaperColor's 3 user buttons are laid
+    // out unusually (one top + two bottom row), so action mapping is
+    // based on physical position, not M5's A/B/C naming:
+    //   M5.BtnA (G10, TOP)         → sleep   (separated, intentional)
+    //   M5.BtnB (G9,  BOTTOM-LEFT) → refresh (most-pressed, accessible)
+    //   M5.BtnC (G1,  BOTTOM-MID)  → settings (occasional)
+    // The 4th button (bottom-right) is the AXP power button — handled
+    // in hardware, no GPIO event.
+    if (M5.BtnA.wasClicked()) { audioBeepChime();  emitButtonEvent("top",          "sleep");    }
+    if (M5.BtnB.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-left",  "refresh");  }
+    if (M5.BtnC.wasClicked()) { audioBeepAlert();  emitButtonEvent("bottom-mid",   "settings"); }
 
     // SHT40 ambient: read every 30 s. Cheap I2C, doesn't block panel.
     static uint32_t s_lastSht = 0;
