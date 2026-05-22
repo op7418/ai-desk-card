@@ -1,5 +1,7 @@
 # AI Desk Card
 
+> 🇨🇳 中文版：[README.zh-CN.md](README.zh-CN.md)
+
 A glanceable e-ink 副屏 driven by an AI agent. The M5Paper sits next to
 your monitor and shows weather, todos, today's calendar, message previews,
 PR queue, current focus task, and the running AI session's status. Data
