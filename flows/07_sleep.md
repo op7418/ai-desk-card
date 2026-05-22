@@ -59,9 +59,19 @@ chose:
 - Battery + BLE (architecture C): tap / rotary to wake, then run any
   /card command to push
 
-## Quiet-hours auto-sleep
+## Quiet-hours auto-sleep (handled by the daemon)
 
-If `interests.yaml` has `quiet_hours.enabled: true`, the scheduled-push
-loop (flow 06) should call this flow automatically at `quiet_hours.start`
-and a fresh-push at `quiet_hours.end`. Implement that branch in the loop
-prompt.
+If `~/.ai-desk-card/interests.yaml` has `quiet_hours.enabled: true`, the
+**daemon** auto-fires this flow when wall-clock crosses
+`quiet_hours.start`. No agent action required.
+
+- Fires at most once per calendar day (so user touching the device after
+  quiet_hours doesn't trigger another auto-sleep that day)
+- Skips if `_device_alive()` is false (no point pushing a name card to
+  an offline device)
+- Re-reads the YAML on every check so edits take effect within ~45 s
+
+If you want the device to wake fresh at `quiet_hours.end`, that part
+still requires the agent — schedule a push in your loop (flow 06) at
+the end time. The daemon doesn't auto-wake because deep-sleep on
+battery would consume current to keep BLE listening.
