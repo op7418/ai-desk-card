@@ -192,10 +192,20 @@ class WiFiTransport(Transport):
             return False
 
     def connected(self) -> bool:
-        # Cheap reachability check — used by /pair-status. We avoid hitting
-        # the device every poll; only re-probe if the last operation
-        # flagged a failure.
-        return self._connect_ok
+        # v0.9: don't sticky-false on a single timed-out cmd. If our cached
+        # flag is False, do a quick TCP probe (~0.5s) and re-flip on
+        # success — otherwise a single failed cmd:sleep_now would lock the
+        # transport out, even after the device rebooted and is fully
+        # reachable on /frame again.
+        if self._connect_ok:
+            return True
+        try:
+            import socket
+            with socket.create_connection((self.ip, self.port), timeout=0.5):
+                self._connect_ok = True
+                return True
+        except Exception:
+            return False
 
 
 class BLETransport(Transport):
@@ -869,12 +879,38 @@ def render_and_push():
         log(f"[render] failed: {e!r}")
         return
 
+    # v0.9: tell the firmware which rectangles are currently tappable, so
+    # it can paint a fast partial-refresh tap-ack (~150ms) before our
+    # render+push comes back. Send before the push so the firmware has
+    # the rects ready when the user starts tapping the new view.
+    _send_chip_rects(VIEW_HOT_ZONES)
+
     kind, packed, region = _compute_diff(img)
     if kind == "noop":
         log("[render] no pixel change — skipping push")
         return
     push_frame_bytes(packed, region=region)
     _FRAME_LAST_PUSH = time.time()
+
+
+_LAST_CHIP_SIG = ""
+
+def _send_chip_rects(zones: list):
+    """Push the current view's tappable rects to the firmware. Skipped if
+    the rect set hasn't changed since the last send (most frames repaint
+    the same hot zones)."""
+    global _LAST_CHIP_SIG
+    rects = []
+    for hz in zones:
+        x0, y0, x1, y1 = hz["rect"]
+        rects.append({"x": int(x0), "y": int(y0),
+                      "w": int(x1 - x0), "h": int(y1 - y0),
+                      "id": str(hz["action"])[:15]})
+    sig = json.dumps(rects, sort_keys=True)
+    if sig == _LAST_CHIP_SIG:
+        return
+    _LAST_CHIP_SIG = sig
+    send_line({"cmd": "set_chips", "rects": rects})
 
 
 def schedule_push():
@@ -1356,6 +1392,33 @@ def discover_wifi_device(timeout_s: float = 3.0) -> "tuple|None":
     return found[0] if found else None
 
 
+def _start_side_serial_reader(port: str):
+    """Open a USB serial port READ-ONLY and pipe inbound bytes into the
+    daemon's RX listeners. Used when the primary transport is Wi-Fi
+    (which has no inbound channel) but a USB cable is also plugged in —
+    the device's status_report / touch JSON lines come out of UART AND
+    Wi-Fi, so we just need to listen on one of them. Lower-risk than
+    exposing /status_report on 0.0.0.0."""
+    try:
+        import serial
+        ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        time.sleep(0.2)
+    except Exception as e:
+        log(f"[side-serial] open {port} failed: {e!r}")
+        return
+
+    def _reader():
+        log(f"[side-serial] reading {port} @ {SERIAL_BAUD} baud "
+            f"(inbound only; Wi-Fi is the push channel)")
+        while True:
+            try: chunk = ser.read(256)
+            except Exception as e:
+                log(f"[side-serial] read fail: {e!r}"); time.sleep(1); continue
+            for b in chunk: on_rx_byte(b)
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+
 def pick_transport(kind: str, port: str | None) -> Transport:
     if port:
         return SerialTransport(port)
@@ -1371,8 +1434,15 @@ def pick_transport(kind: str, port: str | None) -> Transport:
         ip, p = peer
         log(f"[transport] using Wi-Fi {ip}:{p}")
         return WiFiTransport(ip, p)
-    # kind == "auto": prefer Wi-Fi > USB > BLE
-    peer = discover_wifi_device(timeout_s=2.5)
+    # kind == "auto": prefer Wi-Fi > USB > BLE.
+    # v0.9: extend the Wi-Fi mDNS wait from 2.5 s → 8 s. The shorter window
+    # missed the peer when the daemon started right after a firmware
+    # reflash (device's Wi-Fi reassoc + mDNS advertise takes ~5-6 s) and
+    # we fell back to USB serial, which is 30+ s per full frame vs Wi-Fi's
+    # ~2 s. 8 s is comfortably above the observed startup time and still
+    # short enough that the daemon-cold-start no-device-on-LAN case (BLE
+    # fallback) doesn't feel laggy.
+    peer = discover_wifi_device(timeout_s=8.0)
     if peer:
         ip, p = peer
         log(f"[transport] found Wi-Fi peer {ip}:{p}, using Wi-Fi")
@@ -1395,6 +1465,14 @@ def main():
     args = ap.parse_args()
 
     TRANSPORT = pick_transport(args.transport, args.port)
+    # If Wi-Fi is the primary push channel AND a USB serial cable is
+    # plugged in, also open it read-only for the device's inbound JSON
+    # lines (status_report / touch). Without this, arch-A Wi-Fi-only mode
+    # has no way to know the device is alive.
+    if isinstance(TRANSPORT, WiFiTransport):
+        side_ports = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
+        if side_ports:
+            _start_side_serial_reader(side_ports[0])
     if getattr(TRANSPORT, "_NEEDS_INTER_LINE_DELAY", False):
         global SEND_LINE_INTER_DELAY_S
         SEND_LINE_INTER_DELAY_S = 0.1

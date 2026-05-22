@@ -121,41 +121,97 @@ static void emitStatusReport() {
     }
 }
 
-// Touch poll. Detects single-tap (finger down → up within 30-2000 ms) and
-// emits one JSON line per tap. Daemon's RX listener maps (x,y) to chip
-// actions via VIEW_HOT_ZONES (back / settings / refresh / sleep / restart).
+// v0.9: tap-ack chip rects. Daemon pushes the current view's hot zones
+// via cmd:set_chips; we hit-test on press and paint a fast partial
+// refresh as a "tap heard" signal (~150 ms) before daemon's full re-render
+// arrives ~0.8-2 s later. e-ink without this feels broken — taps go in
+// but visual feedback is silent until the next full frame.
+struct Chip { int16_t x, y, w, h; };
+static Chip   g_chips[8];
+static int    g_chipCount = 0;
+
+static int chipHitIndex(int x, int y) {
+    for (int i = 0; i < g_chipCount; ++i) {
+        const Chip& c = g_chips[i];
+        if (x >= c.x && x < c.x + c.w &&
+            y >= c.y && y < c.y + c.h) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void flashChipAck(const Chip& c) {
+    // White-fill the chip rect with UPDATE_MODE_A2 (2-bit, ~150 ms). The
+    // bottom-bar chips are white text on black bg → fill-white wipes the
+    // chip into a blank box: clear "tap heard" signal. daemon's next push
+    // (~0.8-2 s later) overrides with the new view, A2 ghost cleared by
+    // that GC16/DU4 refresh.
+    M5EPD_Canvas tile(&M5.EPD);
+    tile.createCanvas(c.w, c.h);
+    tile.fillCanvas(15);   // 15 = max white in 4bpp grayscale
+    tile.pushCanvas(c.x, c.y, UPDATE_MODE_A2);
+    tile.deleteCanvas();
+}
+
+// Touch poll. Detects single-tap (finger down → up within 30-2000 ms)
+// and emits one JSON line per tap.
 //
-// API order matters and isn't documented well — match the official
-// M5EPD/examples/Basics/TOUCH.ino pattern:
-//   1. available()  gates on the GT911 IRQ flag (cheap, returns false fast)
-//   2. update()     reads fresh coords + finger count over I2C
-//   3. read state   getFingerNum / readFinger
-// Do NOT call flush() — it zeroes _num and _is_finger_up, wiping the
-// state we just spent the I2C read to obtain (the bug that made this
-// poll appear dead for a whole flash cycle).
+// Subtleties learned the hard way on real hardware:
+//
+// 1. M5.TP.available() (IRQ gate) came back silent on this V1.1 board —
+//    possibly the GT911 INT pin (GPIO 36, input-only, no internal
+//    pull-up) doesn't generate clean falling edges. So we poll
+//    directly at 50 Hz.
+//
+// 2. M5.TP.getFingerNum() returns STALE data after release. The
+//    underlying GT911::update() only updates _num on fresh non-zero
+//    reads; on a "no fresh data" or "fresh num=0" read it sets
+//    _is_finger_up=true but leaves _num unchanged. So "n > 0" is NOT
+//    a reliable "finger present" signal.
+//
+//    The fix: a press is fresh only when (n > 0) AND
+//    M5.TP.isFingerUp() returned false on this poll (i.e., the chip
+//    just gave us fresh data with finger down). After 200 ms with no
+//    fresh press, we consider the finger released.
 static void pollTouchAndEmit() {
     static bool s_was_down = false;
     static uint16_t s_x = 0, s_y = 0;
     static uint32_t s_down_ms = 0;
+    static uint32_t s_last_press_ms = 0;
+    static uint32_t s_last_poll = 0;
 
-    if (!M5.TP.available()) return;     // 1. IRQ gate
-    M5.TP.update();                     // 2. refresh state from I2C
+    uint32_t now = millis();
+    if (now - s_last_poll < 20) return;
+    s_last_poll = now;
 
-    bool finger_present = M5.TP.getFingerNum() > 0;
-    if (finger_present) {
+    M5.TP.update();
+    uint8_t n = M5.TP.getFingerNum();
+    bool up_flag = M5.TP.isFingerUp();      // consumes the flag — call once
+    bool fresh_press = (n > 0) && !up_flag;
+
+    if (fresh_press) {
         tp_finger_t f = M5.TP.readFinger(0);
         s_x = f.x; s_y = f.y;
+        s_last_press_ms = now;
         if (!s_was_down) {
-            s_down_ms = millis();
+            s_down_ms = now;
             s_was_down = true;
+            // Tap-ack: if this press is inside a known chip rect, paint
+            // the immediate "I heard you" highlight. Fires on the FIRST
+            // detection only so we don't keep re-painting while the
+            // finger lingers.
+            int hit = chipHitIndex((int)s_x, (int)s_y);
+            if (hit >= 0) flashChipAck(g_chips[hit]);
         }
         return;
     }
 
-    if (!s_was_down) return;            // lift IRQ without prior down — ignore
+    if (!s_was_down) return;
+    if (now - s_last_press_ms < 200) return;   // brief no-data gap; wait it out
     s_was_down = false;
-    uint32_t hold = millis() - s_down_ms;
-    if (hold < 30 || hold > 2000) return;   // glitch / long-press → skip
+    uint32_t hold = now - s_down_ms;
+    if (hold < 30 || hold > 2000) return;
 
     char body[96];
     int bn = snprintf(body, sizeof(body),
@@ -231,6 +287,28 @@ bool dispatchCmd(JsonDocument& doc) {
     }
 
     if (cmd) {
+        if (strcmp(cmd, "set_chips") == 0) {
+            // Daemon publishes the active view's tappable rects so we can
+            // paint the local tap-ack without round-tripping. Replace the
+            // whole list each time.
+            JsonArray arr = doc["rects"].as<JsonArray>();
+            int n = 0;
+            for (JsonObject r : arr) {
+                if (n >= (int)(sizeof(g_chips)/sizeof(g_chips[0]))) break;
+                g_chips[n].x = r["x"] | 0;
+                g_chips[n].y = r["y"] | 0;
+                g_chips[n].w = r["w"] | 0;
+                g_chips[n].h = r["h"] | 0;
+                n++;
+            }
+            g_chipCount = n;
+            char ack[64];
+            int an = snprintf(ack, sizeof(ack),
+                              "{\"ack\":\"set_chips\",\"n\":%d}\n", n);
+            Serial.print(ack);
+            bleWrite((const uint8_t*)ack, (size_t)an);
+            return true;
+        }
         if (strcmp(cmd, "owner") == 0) {
             // Ack so daemon's pair-status works. Owner name we ignore.
             const char* response = "{\"ack\":\"owner\",\"ok\":true}\n";
