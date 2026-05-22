@@ -107,8 +107,10 @@ void setup() {
                   (int)M5.Display.width(), (int)M5.Display.height());
 
     M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-    M5.Display.setRotation(0);
+    M5.Display.setRotation(1);   // panel is 400×600 native portrait; 1 = 600×400 landscape
     canvas.createSprite(M5.Display.width(), M5.Display.height());
+    Serial.printf("[boot] panel after rotation: %dx%d\n",
+                  (int)M5.Display.width(), (int)M5.Display.height());
 
     paintBootSplash();
     Serial.println("[boot] splash pushed");
