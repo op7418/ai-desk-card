@@ -25,9 +25,9 @@ Pick widget type + slot + data, POST to daemon.
 | CPU / RAM / battery | `system` |
 
 Full schema (every field, every constraint) for each type:
-`plugin/skills/card-widget/schemas/<type>.json`. Always read the schema
-before pushing if you haven't pushed that type recently — fields can be
-strict (e.g., `temp_c` must be int, not float).
+`plugin/skills/card-widget/schemas/<type>.schema.json`. Always read the
+schema before pushing if you haven't pushed that type recently — fields
+can be strict (e.g., `temp_c` must be int, not float).
 
 ## Step 2 — Pick the slot
 
