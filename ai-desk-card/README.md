@@ -14,55 +14,295 @@ You ──ask──▶ AI agent ──push──▶ Skill ──HTTP──▶ da
                                                                                 └──▶ 16 widgets across a 4-slot grid
 ```
 
-## Why
+For the why-this-exists and the architecture in detail, see
+[PRODUCT.md](PRODUCT.md). For how each piece is wired, see
+[HANDOVER.md](HANDOVER.md).
 
-Most "always-on dashboards" use a tablet or monitor — high power, screen
-fatigue, another distracting glowing rectangle. E-ink is the opposite:
-0 W idle, paper-grade contrast, persists the last frame after power off.
-Wire it to an AI agent's plugin Skill and you get a sub-second glanceable
-view of whatever's important right now: schedule, code review queue,
-todos, weather, current focus task.
+---
 
-This project is **agent-agnostic** — it works with any AI CLI that supports
-slash-command plugins (Claude, Codex, Gemini, Aider, ...).
+## Supported hardware
 
-## Hardware
+| Device | Status | Notes |
+|---|---|---|
+| **M5Paper V1.1** | ✅ Primary target — fully tested | 4.7-inch 540×960 e-ink, ESP32, 8 MB PSRAM, 16 MB flash, 1150 mAh, USB-C, Wi-Fi 2.4 GHz, BLE 4.2. About ¥600 / $90. |
+| M5Paper V1.0 | 🟡 Likely works | Same SoC + panel; battery voltage detection threshold (`4150 mV` in `src/main.cpp`) may need tuning. Not tested in-house. |
+| M5Paper S3 | 🟡 Probably needs porting | New ESP32-S3 variant; BLE stack differs (NimBLE default). About 1-2 days of porting. |
+| Other ESP32 + e-ink boards | ❌ Not supported | Inkplate / Waveshare / etc. would need a different panel driver. Roadmap item. |
 
-- **M5Paper V1.1** (M5Stack's 4.7" 540×960 e-ink, ESP32, 8 MB PSRAM, 16 MB
-  flash, 1150 mAh battery, USB-C, Wi-Fi 2.4 GHz, BLE 4.2). About ¥600 / $90.
-- A USB-C cable (data — only needed once to flash firmware)
-- Optional: USB-C charger for always-on mode (architecture A)
+You also need:
 
-## Quick start
+- A USB-C data cable (only needed once to flash firmware)
+- Optional: USB-C charger if you want always-on Wi-Fi mode
+
+## Supported AI agents
+
+The plugin is **agent-agnostic** — it works with any AI CLI that supports
+the plugin spec used by Claude Code (commands + scripts + skills layout).
+Tested or likely-compatible:
+
+| Agent | Status |
+|---|---|
+| **Claude Code** | ✅ Primary target — plugin format is from here |
+| Codex CLI | 🟡 Same plugin shape; should work with minor variation in how slash commands route |
+| Gemini CLI | 🟡 Likely works |
+| Aider | 🟡 Likely works (config flag for slash-command routing) |
+| Your own CLI | If it accepts a `plugin/` directory with the same shape, yes |
+
+For the cron-driven auto-refresh, the script auto-detects whichever AI
+CLI is on `$PATH` (`claude`, `codex`, `gemini`, `aider`) or honors
+`$AI_CLI=<binary>` if you want to pin one. See
+[plugin/skills/card-refresh/REFRESH.md](plugin/skills/card-refresh/REFRESH.md).
+
+---
+
+## Installation
+
+### Prerequisites
+
+- macOS (Linux untested) or Windows via WSL2
+- [PlatformIO](https://platformio.org) (install via `pipx install platformio`
+  or VS Code extension)
+- Python 3.10+ — needed for the BLE path; PlatformIO ships a 3.14 that the
+  daemon's `start.sh` auto-picks if present
+- One of: Claude Code, Codex CLI, Gemini CLI, or Aider installed
+
+### Step 1 — Buy the hardware
+
+Get an M5Paper V1.1 ($90 from M5Stack official store, Amazon, or
+AliExpress). Comes with a USB-C cable; if not, any USB-C **data** cable
+(not a power-only cable) will do.
+
+### Step 2 — Clone + flash firmware
 
 ```bash
 git clone https://github.com/op7418/ai-desk-card.git
 cd ai-desk-card
 
-# 1. flash CJK font to LittleFS (one-time)
+# Build the firmware
+pio run -e card
+
+# One-time: flash the CJK font to LittleFS partition
 pio run -e card -t uploadfs
 
-# 2. flash firmware
+# Flash firmware
 pio run -e card -t upload
-
-# 3. start the daemon (auto-picks Wi-Fi > USB > BLE)
-/card-start
-
-# 4. provision Wi-Fi over USB serial or BLE (one-time)
-/card-wifi-setup "<YourSSID>" "<password>"
-
-# 5. install the plugin into your AI CLI of choice, then ask it to push
-#    widgets — or set up the cron-driven auto-refresh (see below).
 ```
 
-After step 4, the device joins your LAN, mDNS-advertises as
-`_ai-desk-card._tcp`, and the daemon discovers it. From then on widget
-pushes land on the e-ink in about 0.2 seconds.
+Total time ~1 minute. After upload the device reboots and shows a
+"waiting for daemon..." splash with the firmware version on it.
+
+### Step 3 — Install the plugin
+
+The `plugin/` directory at the root of this repo IS the plugin.
+Install it into your AI CLI:
+
+**Option A — symlink (recommended for development)**:
+
+```bash
+# Claude Code
+ln -s "$(pwd)/plugin" ~/.claude/plugins/ai-desk-card
+
+# Other CLIs follow the same pattern; check your CLI's docs for
+# the plugin directory location.
+```
+
+**Option B — clone target machine's plugin directory**:
+
+```bash
+# If you don't want a symlink, you can clone the repo directly into
+# the plugin directory:
+mkdir -p ~/.claude/plugins/
+git clone https://github.com/op7418/ai-desk-card.git ~/.claude/plugins/ai-desk-card-src
+ln -s ~/.claude/plugins/ai-desk-card-src/plugin ~/.claude/plugins/ai-desk-card
+```
+
+Verify install — open your AI CLI and run `/card-` and see the
+autocomplete pop up with all slash commands.
+
+### Step 4 — Start the daemon
+
+The daemon is a small Python process that bridges your AI agent
+(over local HTTP) and the device (over Wi-Fi / USB / BLE).
+
+```bash
+/card-start
+```
+
+This auto-picks the best available transport (Wi-Fi > USB > BLE).
+On first install with the device plugged in via USB, it will pick USB.
+
+Verify — daemon writes to `${TMPDIR:-/tmp}/ai_desk_card_daemon.log`:
+
+```bash
+tail -10 "${TMPDIR:-/tmp}/ai_desk_card_daemon.log"
+```
+
+Expected lines:
+
+```
+[serial] opened /dev/cu.usbserial-XXX @ 115200 baud
+[http] listening on 127.0.0.1:9877
+[ready] ai-desk-card daemon v0.8 — push widgets via POST /widget
+```
+
+### Step 5 — Pair BLE (one-time)
+
+The device's BLE radio is on by default and advertising as `Card-XXXX`.
+Pairing is needed only if you want to use BLE later — for the initial
+setup over USB you can skip this.
+
+Pair flow: when daemon connects to the device's BLE characteristic for
+the first time, macOS prompts to pair. The device displays a 6-digit
+PIN on its e-ink screen; type that into the macOS prompt. Done.
+
+### Step 6 — Provision Wi-Fi
+
+This is the big quality-of-life step. After Wi-Fi, frame push latency
+drops from 1-32 s (USB) to 0.2 s (Wi-Fi).
+
+```bash
+/card-wifi-setup "<your SSID>" "<your password>"
+```
+
+The credentials go from your AI CLI → daemon → device NVS (over USB
+or BLE). They are **never** written to git, daemon logs, or any
+remote service.
+
+Wait ~15 seconds; the device will join your Wi-Fi and advertise via
+mDNS. Verify:
+
+```bash
+bash plugin/skills/card-onboard/scripts/probe.sh
+```
+
+Look for `"mdns_peer": { "ip": "...", "port": 9880 }` in the output.
+
+### Step 7 — Restart daemon to switch to Wi-Fi
+
+```bash
+/card-stop && /card-start
+```
+
+Now look for `[transport] found Wi-Fi peer X.X.X.X:9880, using Wi-Fi`.
+
+### Step 8 — Push your first widget
+
+In your AI CLI, ask:
+
+> Show me today's weather on my card.
+
+The agent will use `/card-widget` to push a weather widget. ~0.2
+seconds later it's on the screen.
+
+---
+
+## Configuration
+
+All optional. Defaults work fine for typical use.
+
+### Sleep-card content (`assets/profile.yaml`)
+
+Edit this YAML to customise the digital business card shown when you
+run `/card-sleep`:
+
+```yaml
+name: "Your Name"
+tagline: "what you do"
+bio_lines:
+  - "interests / focus areas"
+  - "second line"
+tags:
+  - icon: "JOB"
+    text: "your job title"
+  - icon: "CITY"
+    text: "your city"
+  - icon: "WEB"
+    text: "yoursite.com"
+qr_image: "qr.png"    # optional; drop a PNG in assets/
+qr_label: "scan to connect"
+avatar_image: "avatar.png"
+footer: "ai-desk-card · sleeping"
+```
+
+After editing, run `/card-sleep` to push the new card and put the
+device to sleep.
+
+### Cron auto-refresh (`~/.ai-desk-card-refresh.log`)
+
+To have widgets refresh automatically, add a cron line:
+
+```bash
+crontab -e
+```
+
+Add:
+
+```cron
+# Workday 8:00-22:00, every 30 min
+*/30 8-21 * * 1-5  /path/to/ai-desk-card/plugin/skills/card-refresh/scripts/refresh_loop.sh
+```
+
+The script auto-picks any AI CLI on your `$PATH`. To pin a specific
+one:
+
+```cron
+*/30 8-21 * * 1-5  AI_CLI=codex /path/to/refresh_loop.sh
+```
+
+Full cost / cadence / no-AI-fallback story:
+[plugin/skills/card-refresh/REFRESH.md](plugin/skills/card-refresh/REFRESH.md).
+
+### No-AI fallback config (`~/.card-refresh.yaml`)
+
+If you'd rather skip the AI entirely and just refresh weather +
+system + git widgets locally:
+
+```yaml
+location: "Beijing"
+repo_path: "/Users/you/code/main-project"
+```
+
+Then point cron at `fallback_refresh.py` instead of `refresh_loop.sh`:
+
+```cron
+0 */2 * * *  /usr/bin/python3 /path/to/ai-desk-card/plugin/skills/card-refresh/scripts/fallback_refresh.py
+```
+
+### Daemon URL (`$CARD_DAEMON_URL`)
+
+By default the daemon listens on `http://127.0.0.1:9877`. If you need
+to override (e.g., running daemon on a different machine):
+
+```bash
+export CARD_DAEMON_URL=http://192.168.1.50:9877
+```
+
+All slash commands and scripts honor this env var.
+
+### AI CLI selection (`$AI_CLI`)
+
+For the cron refresh script, default is auto-detect from
+`{claude, codex, gemini, aider}`. To force one:
+
+```bash
+export AI_CLI=codex
+```
+
+### Forgetting Wi-Fi credentials
+
+```bash
+/card-wifi-setup ""
+```
+
+Empty SSID clears the NVS-stored credentials. The device will stay off
+Wi-Fi on next boot.
+
+---
 
 ## Three power-mode architectures
 
-The daemon picks transport automatically per push; the firmware picks Wi-Fi
-strategy based on whether USB-C is supplying power.
+The daemon picks transport automatically per push; the firmware picks
+Wi-Fi strategy based on whether USB-C is supplying power.
 
 | Mode | Device on | Latency | Battery life |
 |---|---|---|---|
@@ -70,23 +310,16 @@ strategy based on whether USB-C is supplying power.
 | **B** USB serial only | USB-C data cable (no Wi-Fi yet) | 1 s region / 32 s full | n/a (powered) |
 | **C** Battery + BLE standby | Wi-Fi off until daemon BLE-wakes it | 5 s wake + 0.2 s push | months |
 
-Architecture C: device sleeps with BLE in standby, daemon's `/card-refresh`
-cron sends `cmd:wifi_wake_now` over BLE, device brings Wi-Fi up, daemon
-pushes the frame via HTTP, device drops Wi-Fi after a 30-second linger.
+Architecture C: device sleeps with BLE in standby, daemon sends
+`cmd:wifi_wake_now` over BLE, device brings Wi-Fi up, daemon pushes
+the frame via HTTP, device drops Wi-Fi after a 30-second linger.
 ~0.2 mAh per wake-and-push; 24 pushes/day → 6 months on a charge.
 
-## 16 widget types across a 4-slot grid
+For more architecture detail see [PRODUCT.md](PRODUCT.md).
 
-```
-┌───────────┬───────────┐   top-left  / top-right : 270×280   (narrow)
-│ top-left  │ top-right │
-├───────────┴───────────┤   middle               : 540×340   (wide)
-│        middle         │
-├───────────────────────┤   bottom               : 540×280   (wide)
-│        bottom         │
-└───────────────────────┘
-        bar (60 px)         status/settings bar — always on
-```
+---
+
+## 16 widget types
 
 **Work staples**: `weather`, `calendar`, `next-meeting`, `messages`,
 `inbox`, `system`, `git-status`, `pr-queue`, `now-playing`
@@ -103,103 +336,122 @@ for the full schemas.
 
 ## Slash commands
 
-After installing the plugin into your AI agent:
-
 | Command | What it does |
 |---|---|
-| `/card-onboard` | First-time setup: detects daemon / USB / firmware / Wi-Fi state, walks you through whatever's missing |
+| `/card-onboard` | First-time setup walkthrough (detects daemon / USB / firmware / Wi-Fi state) |
 | `/card-widget` | Push widgets to slots (AI uses this when you ask it to show something) |
-| `/card-wifi-setup "<SSID>" "<pw>"` | Provision Wi-Fi credentials to the device's NVS over BLE/USB |
+| `/card-wifi-setup "<SSID>" "<pw>"` | Provision Wi-Fi credentials to the device's NVS |
 | `/card-sleep` | Show your digital business card + put device to deep sleep |
 | `/card-refresh` | Cron-driven auto-refresh entry point |
 | `/card-start`, `/card-stop`, `/card-status` | Daemon lifecycle |
-| `/card-install` | Flash firmware (build first if no `.pio` cache) |
+| `/card-install` | Build (if needed) + flash firmware |
 
-## Auto-refresh via cron
+---
 
-A typical setup runs an AI CLI headless on a schedule:
+## Troubleshooting
 
-```cron
-# Workday 8:00-22:00, every 30 min
-*/30 8-21 * * 1-5  /path/to/ai-desk-card/plugin/skills/card-refresh/scripts/refresh_loop.sh
+### "Daemon won't start"
+
+```bash
+tail -30 "${TMPDIR:-/tmp}/ai_desk_card_daemon.log"
 ```
 
-The script auto-picks any AI CLI in your PATH (`claude`, `codex`,
-`gemini`, `aider`) or honors `$AI_CLI=<binary>`. Pull data from your
-calendar, mail, git, GitHub, weather APIs etc., push to the daemon,
-device updates in 0.2 s.
+Common causes: serial port held by another process, no Python 3.10+
+for BLE path, port 9877 already in use.
 
-Budget: about $1-3/day on a small/cheap model. See
-[REFRESH.md](plugin/skills/card-refresh/REFRESH.md) for the full
-cost / cadence / no-AI-fallback story.
+### "Wi-Fi connect keeps failing"
 
-## Sleep card (digital business card mode)
+```bash
+tail -30 "${TMPDIR:-/tmp}/ai_desk_card_daemon.log" | grep wifi
+```
 
-E-ink keeps the last frame at 0 W after power off. `/card-sleep`
-renders a name card from `assets/profile.yaml` (name, tagline, bio,
-tags, QR code, footer) and tells the device to deep-sleep. Pick the
-card up off your desk, hand it to someone, they see your contact info.
+Status codes:
 
-Edit `assets/profile.yaml` to customise.
+- `1` = SSID not found (typo, or **ESP32 doesn't support 5 GHz** — make
+  sure your router exposes a 2.4 GHz SSID)
+- `4` = auth fail (wrong password)
+- `6` = DHCP fail (router issue)
 
-## Architecture
+### "I want to see the rendered frame without flashing"
 
-The full design rationale is in [PLAN.md](PLAN.md) and
-[PLAN_RENDERING_V06.md](PLAN_RENDERING_V06.md). Highlights:
+```bash
+curl -sf -X POST http://127.0.0.1:9877/widgets/preview -o /tmp/preview.png
+open /tmp/preview.png
+```
 
-- **Server-side rendering**: daemon (Python + Pillow) renders 540×960
-  pixels and ships them to the device. Avoids ESP32 TTF/glyph hell.
-- **Dirty-region diff**: only changed pixels go on the wire. Typical
-  single-widget update is 5-30 KB instead of the 250 KB full frame.
-- **Frame cache persistence**: `_last_frame.png` survives daemon
-  restarts → USB↔Wi-Fi transport switch doesn't trigger a full re-push.
-- **Three transports, one buffer**: Wi-Fi (HTTP), USB serial
-  (chunked JSON), and BLE (chunked JSON, small commands work, frame
-  data is a known-issue on macOS CoreBluetooth) all write to the same
-  PSRAM frame buffer with a busy-flag lock.
-- **mDNS discovery**: device broadcasts `_ai-desk-card._tcp` so the
-  daemon finds it automatically — no fixed IP setup.
+### "Device shows boot splash forever"
+
+The daemon isn't connected. Run:
+
+```bash
+bash plugin/skills/card-onboard/scripts/probe.sh
+```
+
+Read the JSON output; the skill `/card-onboard` will walk you through
+fixing whatever's wrong.
+
+### "I want to verify my firmware is v0.8"
+
+```bash
+curl -sf -X POST http://127.0.0.1:9877/firmware-probe | python3 -m json.tool
+# expect: ack.fw = "0.8.0"
+```
+
+### "It used to work over BLE but now hangs"
+
+The BLE frame-data path has a known issue (the daemon completes the
+write but the device-side `onWrite` callback doesn't fire for sustained
+writes). Workaround: provision Wi-Fi, restart the daemon — it'll switch
+to HTTP via mDNS. See [HANDOVER.md § Known Issues](HANDOVER.md#known-issues--workarounds)
+for the full story.
+
+### Deeper debugging
+
+See [HANDOVER.md § Debugging recipes](HANDOVER.md#debugging-recipes).
+
+---
 
 ## Layout
 
 ```
 ai-desk-card/
 ├── README.md
+├── HANDOVER.md             engineering handover (for the next maintainer)
+├── PRODUCT.md              product positioning + use cases
 ├── PLAN.md                 architecture decisions + scope rules
 ├── PLAN_RENDERING_V06.md   v0.6 server-side rendering migration notes
 ├── platformio.ini          env:card
 ├── partitions.csv          custom partition table (LittleFS for the CJK font)
-├── assets/
-│   ├── profile.yaml        sleep-card / business-card content
-│   └── qr.png              optional QR override
-├── data/
-│   └── cjk.ttf             CJK font for the daemon's PIL renderer
-├── src/                    firmware (ESP-IDF / Arduino)
-│   ├── main.cpp            boot + transport poll loop + command dispatch
-│   ├── frame_receiver.{h,cpp}  full + region pixel ingest, PSRAM buffer
-│   ├── ble_bridge.{h,cpp}      BLE NUS + pair + passkey UI
-│   ├── wifi_bridge.{h,cpp}     NVS creds + connect state machine
-│   ├── http_server.{h,cpp}     POST /frame, /cmd; GET /status
-│   └── widgets.{h,cpp}         widget cache (legacy v0.5 path)
-├── daemon/                 Python bridge
-│   ├── card_daemon.py      HTTP API + transport pick + push pipeline
-│   ├── card_render.py      PIL widget renderers + 4bpp packer
-│   ├── card_render_settings.py  on-device settings page
-│   └── card_render_sleep.py     digital business card
-└── plugin/                 commands, scripts, skills
-    ├── plugin.json
-    ├── commands/           slash-command stubs
-    ├── scripts/            daemon lifecycle + flash + wifi-setup
-    └── skills/
-        ├── card-onboard/       first-time setup decision tree
-        ├── card-widget/        AI-friendly widget catalog + schemas
-        ├── card-wifi-setup/    privacy-aware Wi-Fi provisioning
-        └── card-refresh/       cron + AI CLI entrypoint
+├── LICENSE                 GPL-3.0 with attribution clause
+├── assets/                 sleep-card profile + assets
+├── data/                   CJK font for the daemon's PIL renderer
+├── src/                    firmware (frame_receiver + wifi + http + ble)
+├── daemon/                 Python HTTP bridge + renderers
+└── plugin/                 commands, scripts, skills (this IS the plugin)
 ```
 
-## License + attribution
+## Versioning
+
+- `plugin.json` `version` is the plugin spec version
+- `platformio.ini` `-DCARD_VERSION` is the firmware version
+- Daemon picks up firmware version via `/firmware-probe`
+
+Both should match across release tags.
+
+## License
 
 GPL-3.0 with attribution clause. See [LICENSE](LICENSE).
 
 Vendored EPDGUI framework (parent project's `src/paper/epdgui/`): MIT,
 © 2020 m5stack — see the parent repo's NOTICE.md.
+
+## Contributing
+
+Issues and PRs welcome at https://github.com/op7418/ai-desk-card.
+
+Especially valuable contributions:
+- Hardware photos / videos (helps new users see what they're getting)
+- Linux / Windows daemon testing
+- M5Paper V1.0 / S3 firmware port confirmation
+- New widget schemas + renderers
+- Captive portal Wi-Fi provisioning (roadmap)
