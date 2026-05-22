@@ -77,6 +77,30 @@ device has sent a status report in the last ~90 s. `transport.connected`
 only says "daemon picked a transport class"; `device.alive` says "we're
 actually hearing back from the device right now."
 
+## Step 1.5 — Identify the device profile
+
+The Skill supports two devices with different panels + daemons:
+
+- **M5Paper V1.1** (540×960 grayscale, GT911 touch, BLE pair) — original
+- **M5Paper Color** (600×400 Spectra 6 color, 3 physical buttons, audio + SHT40) — new in v0.10
+
+If GET `/heartbeat` returns `device_status.device == "M5PaperColor"`
+(via `color_daemon.py` running), use the **Color path** described in
+[flows/08_paper_color.md](flows/08_paper_color.md):
+
+- env: `pio run -e paper-color`
+- daemon: `python3 daemon/color_daemon.py --device-ip <IP>`
+- Wi-Fi provision: Serial JSON `cmd:wifi_set` (no BLE pairing UX)
+- slot names: `top-left / top-right / bottom-left / bottom-right`
+- extra widgets: `ambient` (SHT40 temp+humid)
+- physical buttons: 顶=sleep / 下左=refresh / 下中=settings
+
+Otherwise (default) use the **V1.1 path** through the routing table below.
+
+The two daemons can't run on the same port simultaneously — pick one
+based on which device is in front of the user. The Skill flows below
+work for V1.1 unless explicitly noted.
+
 ## Step 2 — Route based on state
 
 Walk the decision tree in this order. First mismatch wins; fix it, then

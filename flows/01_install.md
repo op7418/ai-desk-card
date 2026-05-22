@@ -41,12 +41,22 @@ Expected: one line like `/dev/cu.usbserial-XXXXXXXX`. If empty:
 
 ## Step 2 — Build + flash firmware
 
-From the repo root:
+Pick the right env for the user's device:
+
+**M5Paper V1.1** (default):
 
 ```bash
 pio run -e card
 pio run -e card -t uploadfs        # one-time: flash CJK font to LittleFS
 pio run -e card -t upload          # flash firmware
+```
+
+**M5Paper Color** (color panel, ESP32-S3 — see [flow 08](08_paper_color.md)
+for the full Color profile):
+
+```bash
+pio run -e paper-color
+pio run -e paper-color -t upload   # no uploadfs needed (built-in font)
 ```
 
 Total ~60 seconds the second time; the first run downloads toolchains.
