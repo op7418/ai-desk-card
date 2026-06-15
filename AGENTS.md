@@ -168,12 +168,55 @@ Expected touch/hot-zone logs:
 [touch<] (...) -> settings
 ```
 
-## Phase 4 Starting Notes
+Phase 4 completed:
 
-Open a new Codex window after the Phase 3 commit. Start by reading this file,
-then inspect `git status` and recent commits. Treat Phase 4 as a fresh scoped
-task; do not assume BLE, deep sleep, battery strategy, or complex gestures are
-in scope unless the user says so.
+- PaperS3 touch clicks now flow through the existing daemon hot-zone/action
+  pipeline instead of adding business logic to the PaperS3 HAL.
+- Serial touch and HTTP `/touch` share the same daemon-side dispatcher.
+- PaperS3 keeps using portrait logical coordinates `540x960`; touch coordinate
+  mapping and raw full-frame rendering were not changed.
+- Daemon has a simple UI/frame state machine:
+  `BOOTING`, `READY`, `RECEIVING_FRAME`, `DISPLAYING_FRAME`, `ERROR`, `STATUS`.
+- State transitions log previous state, next state, and reason.
+- Implemented/aliased actions:
+  - `settings` / `status`: enter the status/settings page.
+  - `back` / `home` / `dismiss`: return to the main widget card.
+  - `refresh` / `reload` / `retry`: schedule a daemon re-render/re-push.
+  - Existing `sleep`, `restart`, `repair`, and `clear` actions still dispatch
+    through the daemon action pipeline.
+- `confirm` is an explicit stub with a logged reason; no confirm workflow exists
+  in this phase.
+- PaperS3 status page shows firmware profile, UI state, transport, IP, frame
+  receiver state, last frame age/time, and last error.
+- PaperS3 status page exposes action-test buttons:
+  `REFRESH`, `STATUS`, `BACK`, `RETRY`, `HOME`.
+- If a click arrives during a frame push, daemon logs `ignored reason=busy`
+  rather than dispatching into the active transfer.
+- User verified real-device behavior with `home`: touch mapped coordinates hit
+  the `home` target, daemon accepted the action, transitioned
+  `STATUS -> DISPLAYING_FRAME -> RECEIVING_FRAME -> DISPLAYING_FRAME`, pushed a
+  clean raw serial frame, and refreshed chip rects after the push.
+
+Useful Phase 4 log patterns:
+
+```text
+[dev<] [touch] hit target id=home rect=(...)
+[touch<serial] mapped x=... y=... hold_ms=...
+[touch<serial] hit target id=home rect=(...)
+[action] name=home accepted
+[state] previous=STATUS next=DISPLAYING_FRAME reason=action:home
+[state] previous=DISPLAYING_FRAME next=RECEIVING_FRAME reason=render_and_push
+[frame] raw serial push fid=... 259200B full (...) ok
+[state] previous=RECEIVING_FRAME next=DISPLAYING_FRAME reason=frame push complete
+```
+
+Phase 5 starting boundary:
+
+- Treat Phase 5 as a fresh scoped task. Do not assume BLE, deep sleep, battery
+  strategy, power optimization, or complex gestures are in scope unless the user
+  says so.
+- Preserve the stable PaperS3 raw full-frame push and touch coordinate mapping.
+- Keep original M5Paper V1.1 profile behavior intact.
 
 ## Engineering Rules For This Project
 

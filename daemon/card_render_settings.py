@@ -105,7 +105,10 @@ def _action_button(d, x, y, w, h, icon, label, action_id):
     text_y = y + (h - card_render.BODY_SIZE) // 2 - 2
     if icon:
         d.text((x + 28, text_y), icon, fill=INK, font=f_b)
-    d.text((x + 80, text_y), label, fill=INK, font=f_b)
+        d.text((x + 80, text_y), label, fill=INK, font=f_b)
+    else:
+        tw = d.textlength(label, font=f_b)
+        d.text((x + (w - tw) // 2, text_y), label, fill=INK, font=f_b)
     HOT_ZONES.append({"action": action_id, "rect": (x, y, x + w, y + h)})
     return y + h
 
@@ -132,19 +135,25 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
 
     y = header_h + 28
 
+    is_paper_s3 = state.get("firmware_profile") == "paper-s3"
+
     # ---- 设备 ----
     y = _section_header(d, PADDING, y, "设备")
     w = CANVAS_W - 2 * PADDING
     y = _kv_row(d, PADDING, y, w, "型号", state.get("model", "M5Paper V1.1"))
     y = _kv_row(d, PADDING, y, w, "固件", state.get("firmware", "—"))
-    y = _kv_row(d, PADDING, y, w, "MAC",  state.get("mac",      "—"))
-    bat = state.get("battery_pct"); bat_v = state.get("battery_mv")
-    bat_str = "—"
-    if bat is not None:
-        bat_str = f"{bat}%"
-        if bat_v: bat_str += f"   ({bat_v / 1000:.2f} V)"
-    y = _kv_row(d, PADDING, y, w, "电量",     bat_str)
-    y = _kv_row(d, PADDING, y, w, "运行时长", state.get("uptime", "—"))
+    if is_paper_s3:
+        y = _kv_row(d, PADDING, y, w, "Profile", state.get("firmware_profile", "—"))
+        y = _kv_row(d, PADDING, y, w, "UI 状态", state.get("ui_state", "—"))
+    else:
+        y = _kv_row(d, PADDING, y, w, "MAC",  state.get("mac",      "—"))
+        bat = state.get("battery_pct"); bat_v = state.get("battery_mv")
+        bat_str = "—"
+        if bat is not None:
+            bat_str = f"{bat}%"
+            if bat_v: bat_str += f"   ({bat_v / 1000:.2f} V)"
+        y = _kv_row(d, PADDING, y, w, "电量",     bat_str)
+        y = _kv_row(d, PADDING, y, w, "运行时长", state.get("uptime", "—"))
     y += 12
 
     # ---- 连接 ----
@@ -155,40 +164,60 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
     y = _kv_row(d, PADDING, y, w, "传输方式", t_str)
     y = _kv_row(d, PADDING, y, w, "守护进程",
                 "● 已连接" if state.get("daemon_ok") else "○ 未连接")
-    y = _kv_row(d, PADDING, y, w, "蓝牙",
-                "已配对" if state.get("ble_paired") else "未配对")
-    # v0.8 Wi-Fi 状态：两行 — line1 ● SSID; line2 IP (rssi)
-    if state.get("wifi_connected"):
-        ssid = state.get("wifi_ssid", "") or "(unknown)"
-        ip   = state.get("wifi_ip", "") or ""
-        rssi = state.get("wifi_rssi")
-        line1 = f"● {ssid}"
-        line2 = ip if ip else ""
-        if isinstance(rssi, int):
-            line2 = f"{line2}   {rssi} dBm" if line2 else f"{rssi} dBm"
-        y = _kv_row_2line(d, PADDING, y, w, "Wi-Fi", line1, line2)
-    else:
-        cfg_ssid = state.get("wifi_ssid", "")
-        if cfg_ssid:
-            y = _kv_row(d, PADDING, y, w, "Wi-Fi", f"○ 未连接 ({cfg_ssid})")
+    if is_paper_s3:
+        last_age = state.get("last_frame_age_s")
+        if last_age is None:
+            frame_line = "—"
         else:
-            y = _kv_row(d, PADDING, y, w, "Wi-Fi", "未配置")
+            frame_line = f"{last_age}s ago · {state.get('last_frame_time', '—')}"
+        y = _kv_row(d, PADDING, y, w, "IP", state.get("ip", "—"))
+        y = _kv_row(d, PADDING, y, w, "最近帧", frame_line)
+        y = _kv_row(d, PADDING, y, w, "Frame RX", state.get("frame_state", "—"))
+        y = _kv_row(d, PADDING, y, w, "错误", state.get("last_error") or "—")
+    else:
+        y = _kv_row(d, PADDING, y, w, "蓝牙",
+                    "已配对" if state.get("ble_paired") else "未配对")
+        # v0.8 Wi-Fi 状态：两行 — line1 ● SSID; line2 IP (rssi)
+        if state.get("wifi_connected"):
+            ssid = state.get("wifi_ssid", "") or "(unknown)"
+            ip   = state.get("wifi_ip", "") or ""
+            rssi = state.get("wifi_rssi")
+            line1 = f"● {ssid}"
+            line2 = ip if ip else ""
+            if isinstance(rssi, int):
+                line2 = f"{line2}   {rssi} dBm" if line2 else f"{rssi} dBm"
+            y = _kv_row_2line(d, PADDING, y, w, "Wi-Fi", line1, line2)
+        else:
+            cfg_ssid = state.get("wifi_ssid", "")
+            if cfg_ssid:
+                y = _kv_row(d, PADDING, y, w, "Wi-Fi", f"○ 未连接 ({cfg_ssid})")
+            else:
+                y = _kv_row(d, PADDING, y, w, "Wi-Fi", "未配置")
     y += 14
 
     # ---- 操作 ----
     y = _section_header(d, PADDING, y, "操作")
-    btn_h = 54
+    btn_h = 48 if is_paper_s3 else 54
     btn_w = w
-    actions = [
-        ("●", "刷新组件",           "refresh"),
-        ("○", "进入睡眠（名片）",   "sleep"),
-        ("●", "重启设备",           "restart"),
-        ("●", "重新配对蓝牙",       "repair"),
-        ("●", "清空所有组件",       "clear"),
-    ]
+    if is_paper_s3:
+        actions = [
+            ("", "REFRESH", "refresh"),
+            ("", "STATUS",  "status"),
+            ("", "BACK",    "back"),
+            ("", "RETRY",   "retry"),
+            ("", "HOME",    "home"),
+        ]
+    else:
+        actions = [
+            ("●", "刷新组件",           "refresh"),
+            ("○", "进入睡眠（名片）",   "sleep"),
+            ("●", "重启设备",           "restart"),
+            ("●", "重新配对蓝牙",       "repair"),
+            ("●", "清空所有组件",       "clear"),
+        ]
     for icon, label, aid in actions:
         y = _action_button(d, PADDING, y, btn_w, btn_h, icon, label, aid)
-        y += 8
+        y += 6 if is_paper_s3 else 8
 
     # ---- 底部提示 ----
     foot = "点击上方任一项执行  ·  左上 返回 退出"

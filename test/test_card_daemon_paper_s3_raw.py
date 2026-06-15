@@ -55,8 +55,16 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.old_write_delay = card_daemon.SERIAL_RAW_WRITE_DELAY_S
         self.old_begin_timeout = card_daemon.SERIAL_RAW_BEGIN_TIMEOUT_S
         self.old_end_timeout = card_daemon.SERIAL_RAW_END_TIMEOUT_S
+        self.old_in_settings = card_daemon.IN_SETTINGS
+        self.old_ui_state = card_daemon.UI_STATE
+        self.old_ui_last_error = card_daemon.UI_LAST_ERROR
+        self.old_frame_last_push = card_daemon._FRAME_LAST_PUSH
         card_daemon.DEVICE_TELEMETRY.clear()
         card_daemon._FRAME_ID = 0
+        card_daemon._FRAME_LAST_PUSH = 0.0
+        card_daemon.IN_SETTINGS = False
+        card_daemon.UI_STATE = "BOOTING"
+        card_daemon.UI_LAST_ERROR = ""
         with card_daemon._RX_LISTENERS_LOCK:
             card_daemon._RX_LISTENERS.clear()
 
@@ -66,6 +74,10 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         card_daemon.SERIAL_RAW_WRITE_DELAY_S = self.old_write_delay
         card_daemon.SERIAL_RAW_BEGIN_TIMEOUT_S = self.old_begin_timeout
         card_daemon.SERIAL_RAW_END_TIMEOUT_S = self.old_end_timeout
+        card_daemon.IN_SETTINGS = self.old_in_settings
+        card_daemon.UI_STATE = self.old_ui_state
+        card_daemon.UI_LAST_ERROR = self.old_ui_last_error
+        card_daemon._FRAME_LAST_PUSH = self.old_frame_last_push
         card_daemon.VIEW_HOT_ZONES = []
         card_daemon._FRAME_DIRTY.clear()
         with card_daemon._RX_LISTENERS_LOCK:
@@ -181,6 +193,70 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             self.assertEqual(calls, ["sleep"])
         finally:
             card_daemon._internal_dispatch = old_dispatch
+
+    def test_status_and_home_actions_drive_settings_view(self):
+        card_daemon.IN_SETTINGS = False
+        card_daemon._FRAME_DIRTY.clear()
+
+        status_result = card_daemon._internal_dispatch("status")
+
+        self.assertEqual(status_result["action"], "status")
+        self.assertTrue(status_result["accepted"])
+        self.assertTrue(card_daemon.IN_SETTINGS)
+        self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
+
+        card_daemon._FRAME_DIRTY.clear()
+        home_result = card_daemon._internal_dispatch("home")
+
+        self.assertEqual(home_result["action"], "home")
+        self.assertTrue(home_result["accepted"])
+        self.assertFalse(card_daemon.IN_SETTINGS)
+        self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
+
+    def test_retry_action_schedules_refresh(self):
+        card_daemon._FRAME_DIRTY.clear()
+
+        result = card_daemon._internal_dispatch("retry")
+
+        self.assertEqual(result["action"], "retry")
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["frame_request"], "scheduled")
+        self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
+
+    def test_touch_action_ignored_while_frame_push_busy(self):
+        card_daemon._FRAME_DIRTY.clear()
+
+        acquired = card_daemon._FRAME_LOCK.acquire(timeout=0.1)
+        self.assertTrue(acquired)
+        try:
+            result = card_daemon._dispatch_touch_action("refresh")
+        finally:
+            card_daemon._FRAME_LOCK.release()
+
+        self.assertEqual(result["action"], "refresh")
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reason"], "busy")
+        self.assertFalse(card_daemon._FRAME_DIRTY.is_set())
+
+    def test_settings_state_exposes_paper_s3_status_fields(self):
+        card_daemon.DEVICE_TELEMETRY.update({
+            "device": "M5Stack PaperS3",
+            "firmware": "0.10.7-paper-s3-frame",
+            "wifi_ip": "192.168.4.23",
+            "frame_state": "displayed",
+        })
+        card_daemon._FRAME_LAST_PUSH = time.time() - 12
+
+        state = card_daemon._settings_state()
+
+        self.assertEqual(state["model"], "M5Stack PaperS3")
+        self.assertEqual(state["firmware_profile"], "paper-s3")
+        self.assertEqual(state["ip"], "192.168.4.23")
+        self.assertEqual(state["last_frame_age_s"], 12)
+        self.assertIn(state["ui_state"], {
+            "BOOTING", "READY", "RECEIVING_FRAME", "DISPLAYING_FRAME",
+            "ERROR", "STATUS",
+        })
 
 
 if __name__ == "__main__":

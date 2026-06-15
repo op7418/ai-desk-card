@@ -92,6 +92,17 @@ VIEW_LOCK = threading.Lock()
 IN_SETTINGS = False
 VIEW_HOT_ZONES: list = []          # populated after settings render; firmware uses for tap routing
 DEVICE_TELEMETRY: dict = {}        # firmware-reported state (battery, fw, mac, uptime) — fills on /status_report
+UI_STATES = (
+    "BOOTING",
+    "READY",
+    "RECEIVING_FRAME",
+    "DISPLAYING_FRAME",
+    "ERROR",
+    "STATUS",
+)
+UI_STATE = "BOOTING"
+UI_LAST_ERROR = ""
+UI_STATE_LOCK = threading.Lock()
 WIDGET_SLOTS = ("top-left", "top-right", "middle", "bottom", "full")
 WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
                 "ai-status", "ai-tasks",
@@ -103,6 +114,32 @@ TRANSPORT = None
 
 
 def log(*a, **kw): print(*a, file=sys.stderr, flush=True, **kw)
+
+
+def _transition_ui_state(next_state: str, reason: str):
+    """Record a high-level UI/frame state transition for touch/action logs."""
+    global UI_STATE
+    if next_state not in UI_STATES:
+        next_state = "ERROR"
+    with UI_STATE_LOCK:
+        prev = UI_STATE
+        UI_STATE = next_state
+    if prev != next_state:
+        log(f"[state] previous={prev} next={next_state} reason={reason}")
+
+
+def _set_ui_error(reason: str):
+    global UI_LAST_ERROR
+    UI_LAST_ERROR = str(reason)
+    log(f"[error] reason={UI_LAST_ERROR}")
+    _transition_ui_state("ERROR", UI_LAST_ERROR)
+
+
+def _clear_ui_error(reason: str):
+    global UI_LAST_ERROR
+    if UI_LAST_ERROR:
+        log(f"[error] cleared reason={reason} previous={UI_LAST_ERROR}")
+    UI_LAST_ERROR = ""
 
 
 # ---- Transports ----
@@ -400,6 +437,37 @@ def _telemetry_listener(line: str):
             pass
 
 
+def _action_result(action: str, accepted: bool, reason: str = "", **extra) -> dict:
+    result = {"action": action, "accepted": accepted}
+    if reason:
+        result["reason"] = reason
+    result.update(extra)
+    status = "accepted" if accepted else "ignored"
+    detail = f" reason={reason}" if reason else ""
+    log(f"[action] name={action} {status}{detail}")
+    return result
+
+
+def _match_touch_zone(x: int, y: int) -> "tuple[dict | None, str | None]":
+    for hz in VIEW_HOT_ZONES:
+        x0, y0, x1, y1 = hz["rect"]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return hz, str(hz.get("action") or "")
+    return None, None
+
+
+def _dispatch_touch_xy(x: int, y: int, hold_ms=None, source: str = "serial") -> dict:
+    DEVICE_TELEMETRY["last_status_seen_ms"] = int(time.time() * 1000)
+    hold = "?" if hold_ms is None else str(hold_ms)
+    log(f"[touch<{source}] mapped x={x} y={y} hold_ms={hold}")
+    zone, action = _match_touch_zone(x, y)
+    if action is None:
+        log(f"[touch<{source}] hit target id=none")
+        return _action_result("none", False, "unknown-target")
+    log(f"[touch<{source}] hit target id={action} rect={zone['rect']}")
+    return _dispatch_touch_action(action)
+
+
 def _touch_event_listener(line: str):
     """Firmware v0.9+ emits {event:touch, x, y, hold_ms} on the finger-up
     edge of a tap. Map (x,y) to a VIEW_HOT_ZONES action and dispatch."""
@@ -413,26 +481,20 @@ def _touch_event_listener(line: str):
         x, y = int(obj["x"]), int(obj["y"])
     except (KeyError, TypeError, ValueError):
         return
-    action = None
-    for hz in VIEW_HOT_ZONES:
-        x0, y0, x1, y1 = hz["rect"]
-        if x0 <= x <= x1 and y0 <= y <= y1:
-            action = hz["action"]; break
-    if action is None:
-        log(f"[touch<] ({x},{y}) → no zone match")
-        return
-    log(f"[touch<] ({x},{y}) → {action}")
-    _dispatch_touch_action(action)
+    hold_ms = obj.get("hold_ms")
+    _dispatch_touch_xy(x, y, hold_ms=hold_ms, source="serial")
 
 
 def _dispatch_touch_action(action: str):
+    if _FRAME_LOCK.locked():
+        return _action_result(action, False, "busy", state=UI_STATE)
     if action == "sleep":
         # Sleep renders and pushes a full frame before sending sleep_now.
         # Do it off the serial reader thread so raw-frame ack lines can be
         # read while the push waits for them.
         threading.Thread(target=_internal_dispatch, args=(action,), daemon=True).start()
-        return
-    _internal_dispatch(action)
+        return _action_result(action, True, "async", state=UI_STATE)
+    return _internal_dispatch(action)
 
 
 def on_rx_byte(b: int):
@@ -498,6 +560,17 @@ _FRAME_ID = 0
 _FRAME_LAST_PUSH = 0.0   # epoch of last completed push (for bar's "Xs ago")
 _FRAME_LOCK = threading.Lock()
 _FRAME_DIRTY = threading.Event()
+
+
+def _resting_ui_state() -> str:
+    if UI_LAST_ERROR:
+        return "ERROR"
+    if IN_SETTINGS:
+        return "STATUS"
+    if _FRAME_LAST_PUSH > 0:
+        return "DISPLAYING_FRAME"
+    return "READY"
+
 
 def _crc32(data: bytes) -> int:
     return binascii.crc32(data) & 0xFFFFFFFF
@@ -670,7 +743,7 @@ def _burst_power_down_loop():
             _BURST_LAST_PUSH = 0
 
 
-def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
+def push_frame_bytes(packed: bytes, region: "tuple|None" = None) -> bool:
     """Send a packed 4bpp frame via the active transport.
 
     Full frame: packed = FRAME_BYTES, region = None.
@@ -700,7 +773,7 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
             kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
             log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
-        return
+        return bool(ok)
 
     if (region is None and len(packed) == FRAME_BYTES
             and isinstance(TRANSPORT, SerialTransport)
@@ -715,7 +788,7 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
             dt = time.time() - t0
             log(f"[frame] raw serial push fid={fid} {len(packed)}B full ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
-        return
+        return bool(ok)
 
     # Architecture C: BLE-primary daemon takes a detour through Wi-Fi for
     # this push. ~5 s wake overhead on a cold start, ~0 if Wi-Fi was just
@@ -738,7 +811,7 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
                 with _BURST_LOCK:
                     global _BURST_LAST_PUSH
                     _BURST_LAST_PUSH = time.time()
-                return
+                return True
             log("[burst] HTTP push failed — falling back to BLE chunked path")
             # fall through to the chunked-JSON code below
 
@@ -771,6 +844,7 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
         dt = time.time() - t0
         kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
         log(f"[frame] pushed fid={fid} {len(packed)}B {kind} in {len(chunks)} chunks ({dt:.2f}s)")
+        return True
 
 
 def render_and_push_sleep():
@@ -797,8 +871,10 @@ def render_and_push_sleep():
         log(f"[sleep] render failed: {e!r}")
         return False
     log(f"[sleep] rendering name card for '{profile.get('name', '?')}'")
-    push_frame_bytes(packed)
-    return True
+    ok = push_frame_bytes(packed)
+    if not ok:
+        _set_ui_error("sleep frame push failed")
+    return ok
 
 
 def _active_transport_label() -> "str | None":
@@ -862,6 +938,20 @@ def _settings_state() -> dict:
     state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
     state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
     state["ble_paired"] = False
+    state["ui_state"] = UI_STATE
+    state["last_error"] = UI_LAST_ERROR
+    state["firmware_profile"] = (
+        "paper-s3" if _paper_s3_raw_frame_supported() else "m5paper-v1.1"
+    )
+    state["ip"] = state.get("wifi_ip") or "—"
+    if _FRAME_LAST_PUSH > 0:
+        state["last_frame_age_s"] = int(time.time() - _FRAME_LAST_PUSH)
+        state["last_frame_time"] = datetime.fromtimestamp(
+            _FRAME_LAST_PUSH
+        ).strftime("%H:%M:%S")
+    else:
+        state["last_frame_age_s"] = None
+        state["last_frame_time"] = "—"
     # Pass through firmware's wifi_* fields if available (v0.8).
     # Renderer reads wifi_connected / wifi_ssid / wifi_ip / wifi_rssi.
     return state
@@ -973,13 +1063,15 @@ def render_and_push():
     page renderer when IN_SETTINGS is set. Uses dirty-region diff so the
     typical "one widget changed" path only ships the changed rectangle."""
     global _FRAME_LAST_PUSH, VIEW_HOT_ZONES, _LAST_FRAME_IMG
+    _transition_ui_state("RECEIVING_FRAME", "render_and_push")
+    log("[frame] refresh request start reason=render_and_push")
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render
         import importlib
         importlib.reload(card_render)
     except Exception as e:
-        log(f"[render] import fail: {e!r}")
+        _set_ui_error(f"render import failed: {e!r}")
         return
     try:
         if IN_SETTINGS:
@@ -995,7 +1087,7 @@ def render_and_push():
             # during paint_bottom_bar — copy out here.
             VIEW_HOT_ZONES = card_render.get_bottom_bar_hot_zones()
     except Exception as e:
-        log(f"[render] failed: {e!r}")
+        _set_ui_error(f"render failed: {e!r}")
         return
 
     if isinstance(TRANSPORT, SerialTransport) and _paper_s3_raw_frame_supported():
@@ -1003,12 +1095,19 @@ def render_and_push():
         _LAST_FRAME_IMG = img.copy()
         _persist_last_frame(_LAST_FRAME_IMG)
         log(f"[diff] paper-s3 raw serial -> full frame {len(packed)}B")
-        push_frame_bytes(packed, region=None)
+        ok = push_frame_bytes(packed, region=None)
+        if not ok:
+            _set_ui_error("paper-s3 raw serial frame push failed")
+            log("[frame] refresh request end result=failed")
+            return
         # PaperS3's raw serial frame stream monopolizes the device parser
         # until frame_raw_end. Send the current hit rects after the frame so
         # touch tests on the freshly painted UI have zones immediately.
         _send_chip_rects(VIEW_HOT_ZONES, force=True)
         _FRAME_LAST_PUSH = time.time()
+        _clear_ui_error("frame push succeeded")
+        _transition_ui_state(_resting_ui_state(), "frame push complete")
+        log("[frame] refresh request end result=ok")
         return
 
     # v0.9: tell the firmware which rectangles are currently tappable, so
@@ -1020,9 +1119,18 @@ def render_and_push():
     kind, packed, region = _compute_diff(img)
     if kind == "noop":
         log("[render] no pixel change — skipping push")
+        _transition_ui_state(_resting_ui_state(), "frame noop")
+        log("[frame] refresh request end result=noop")
         return
-    push_frame_bytes(packed, region=region)
+    ok = push_frame_bytes(packed, region=region)
+    if not ok:
+        _set_ui_error("frame push failed")
+        log("[frame] refresh request end result=failed")
+        return
     _FRAME_LAST_PUSH = time.time()
+    _clear_ui_error("frame push succeeded")
+    _transition_ui_state(_resting_ui_state(), "frame push complete")
+    log("[frame] refresh request end result=ok")
 
 
 _LAST_CHIP_SIG = ""
@@ -1047,9 +1155,10 @@ def _send_chip_rects(zones: list, force: bool = False):
     send_line({"cmd": "set_chips", "rects": rects})
 
 
-def schedule_push():
+def schedule_push(reason: str = "dirty"):
     """Debounce trigger. Sets a dirty flag; the push_loop thread coalesces
     rapid POSTs into a single render+push after PUSH_DEBOUNCE_S of quiet."""
+    log(f"[frame] refresh request queued reason={reason}")
     _FRAME_DIRTY.set()
 
 
@@ -1069,6 +1178,7 @@ def push_loop():
                 # below sees it immediately.
                 break
         if not (TRANSPORT and TRANSPORT.connected()):
+            _set_ui_error("no transport for scheduled frame push")
             log("[frame] no transport — skipping push (will retry on next dirty)")
             continue
         render_and_push()
@@ -1348,31 +1458,14 @@ class CardHandler(BaseHTTPRequestHandler):
             # maps to a hot-zone action against the last rendered view.
             # A touch is also proof of life — update last_seen so the
             # heartbeat reflects "the device is interactive right now".
-            DEVICE_TELEMETRY["last_status_seen_ms"] = int(time.time() * 1000)
             try:
                 x, y = int(payload["x"]), int(payload["y"])
             except (KeyError, TypeError, ValueError):
                 return self._reply(400, {"error": "x,y required"})
-            action = None
-            for hz in VIEW_HOT_ZONES:
-                x0, y0, x1, y1 = hz["rect"]
-                if x0 <= x <= x1 and y0 <= y <= y1:
-                    action = hz["action"]; break
-            if action is None:
-                return self._reply(200, {"ok": True, "action": None})
-            log(f"[touch] ({x},{y}) → {action}")
-            # Dispatch internally — equivalent of hitting the endpoint
-            # by hand. Keeps logic in one place.
-            if action == "back":     return self._reply(200, _internal_dispatch("back"))
-            if action == "settings": return self._reply(200, _internal_dispatch("settings"))
-            if action == "refresh":  schedule_push(); return self._reply(200, {"action": "refresh"})
-            if action == "sleep":    return self._reply(200, _internal_dispatch("sleep"))
-            if action == "restart":  send_line({"cmd": "restart"}); return self._reply(200, {"action": "restart"})
-            if action == "repair":   send_line({"cmd": "unpair"});  return self._reply(200, {"action": "repair"})
-            if action == "clear":
-                with WIDGET_LOCK: WIDGET_CACHE.clear()
-                schedule_push(); return self._reply(200, {"action": "clear"})
-            return self._reply(200, {"ok": True, "action": action})
+            result = _dispatch_touch_xy(
+                x, y, hold_ms=payload.get("hold_ms"), source="http"
+            )
+            return self._reply(200, {"ok": True, **result})
 
         return self._reply(404, {"error": f"unknown POST {path!r}"})
 
@@ -1381,26 +1474,46 @@ def _internal_dispatch(action: str) -> dict:
     """Helper for /touch — runs the side-effects of a chip action without
     re-entering the HTTP layer."""
     global IN_SETTINGS
-    if action == "settings":
-        with VIEW_LOCK: IN_SETTINGS = True
-        schedule_push(); return {"action": "settings"}
-    if action == "back":
-        with VIEW_LOCK: IN_SETTINGS = False
-        schedule_push(); return {"action": "back"}
-    if action == "refresh":
-        schedule_push(); return {"action": "refresh"}
+    action = str(action or "").strip().lower()
+    if action in ("settings", "status"):
+        with VIEW_LOCK:
+            IN_SETTINGS = True
+        _transition_ui_state("STATUS", f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state="STATUS", frame_request="scheduled"
+        )
+    if action in ("back", "home", "dismiss"):
+        with VIEW_LOCK:
+            IN_SETTINGS = False
+        _transition_ui_state(_resting_ui_state(), f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state=_resting_ui_state(), frame_request="scheduled"
+        )
+    if action in ("refresh", "reload", "retry"):
+        if action == "retry":
+            _clear_ui_error("retry action")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(action, True, frame_request="scheduled")
     if action == "sleep":
         if render_and_push_sleep():
             send_line({"cmd": "sleep_now", "wake_after_sec": 0})
-        return {"action": "sleep"}
+            return _action_result(action, True, command="sleep_now")
+        return _action_result(action, False, "sleep-render-failed")
     if action == "restart":
-        send_line({"cmd": "restart"}); return {"action": "restart"}
+        send_line({"cmd": "restart"})
+        return _action_result(action, True, command="restart")
     if action == "repair":
-        send_line({"cmd": "unpair"}); return {"action": "repair"}
+        send_line({"cmd": "unpair"})
+        return _action_result(action, True, command="unpair")
     if action == "clear":
         with WIDGET_LOCK: WIDGET_CACHE.clear()
-        schedule_push(); return {"action": "clear"}
-    return {"action": action}
+        schedule_push(reason=f"action:{action}")
+        return _action_result(action, True, frame_request="scheduled")
+    if action == "confirm":
+        return _action_result(action, False, "stub-no-confirm-target")
+    return _action_result(action or "unknown", False, "unknown-action")
 
 
 # ---- Periodic re-push (for widget freshness while idle) ----
@@ -1622,6 +1735,8 @@ def main():
         log(f"[transport] inter-line delay: {SEND_LINE_INTER_DELAY_S*1000:.0f}ms")
 
     def _handshake():
+        _clear_ui_error("transport connected")
+        _transition_ui_state(_resting_ui_state(), "transport connected")
         if args.owner:
             send_line({"cmd": "owner", "name": args.owner})
         send_line({"time": [int(time.time()), tz_offset_seconds()]})
