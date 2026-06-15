@@ -30,6 +30,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -42,6 +43,11 @@ from urllib.parse import urlparse, parse_qs
 SERIAL_BAUD = 115200   # v0.6 first cut — see main.cpp note about baud bump issues
 FRAME_W, FRAME_H = 540, 960
 FRAME_BYTES = FRAME_W * FRAME_H // 2   # 259,200
+PAPER_S3_RAW_FW_TOKEN = "paper-s3-frame"
+SERIAL_RAW_WRITE_SIZE = 512
+SERIAL_RAW_WRITE_DELAY_S = 0.005
+SERIAL_RAW_BEGIN_TIMEOUT_S = 5.0
+SERIAL_RAW_END_TIMEOUT_S = 45.0
 PUSH_DEBOUNCE_S = 1.5
 
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -50,8 +56,13 @@ NUS_TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 WIDGET_LOCK = threading.Lock()
 WIDGET_CACHE: dict = {}
-_WIDGET_CACHE_PATH = os.path.join(
-    os.environ.get("TMPDIR", "/tmp"), "ai_desk_card_widget_cache.json")
+
+
+def _daemon_cache_path(filename: str) -> str:
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
+_WIDGET_CACHE_PATH = _daemon_cache_path("ai_desk_card_widget_cache.json")
 
 
 def _persist_widget_cache():
@@ -344,6 +355,7 @@ def _telemetry_listener(line: str):
         return
     # Map firmware field names → DEVICE_TELEMETRY keys.
     mapping = {
+        "device":          "device",
         "fw":              "firmware",
         "mac":             "mac",
         "battery_pct":     "battery_pct",
@@ -353,6 +365,7 @@ def _telemetry_listener(line: str):
         "wifi_ssid":       "wifi_ssid",
         "wifi_ip":         "wifi_ip",
         "wifi_rssi":       "wifi_rssi",
+        "frame_state":     "frame_state",
     }
     for src, dst in mapping.items():
         if src in obj:
@@ -480,6 +493,88 @@ def _crc32(data: bytes) -> int:
     return binascii.crc32(data) & 0xFFFFFFFF
 
 
+def _paper_s3_raw_frame_supported() -> bool:
+    fw = str(DEVICE_TELEMETRY.get("firmware") or "").lower()
+    return PAPER_S3_RAW_FW_TOKEN in fw
+
+
+def _frame_raw_begin_command(fid: int, byte_count: int, crc: int) -> dict:
+    return {
+        "cmd": "frame_raw_begin",
+        "fid": int(fid) & 0xFFFFFFFF,
+        "w": FRAME_W,
+        "h": FRAME_H,
+        "bpp": 4,
+        "bytes": int(byte_count),
+        "crc": int(crc) & 0xFFFFFFFF,
+    }
+
+
+class _FrameRawAckWaiter:
+    def __init__(self, fid: int):
+        self.fid = int(fid) & 0xFFFFFFFF
+        self._condition = threading.Condition()
+        self._acks = set()
+
+    def __call__(self, line: str):
+        try:
+            obj = json.loads(line.strip())
+        except Exception:
+            return
+        if not isinstance(obj, dict):
+            return
+        if obj.get("ack") not in ("frame_raw_begin", "frame_raw_end"):
+            return
+        try:
+            fid = int(obj.get("fid"))
+        except (TypeError, ValueError):
+            return
+        if fid != self.fid:
+            return
+        with self._condition:
+            self._acks.add(obj["ack"])
+            self._condition.notify_all()
+
+    def wait(self, ack: str, timeout_s: float) -> bool:
+        deadline = time.time() + timeout_s
+        with self._condition:
+            while ack not in self._acks:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return True
+
+
+def _push_frame_raw_serial(packed: bytes, fid: int, crc: int) -> bool:
+    if TRANSPORT is None:
+        log("[frame] raw serial error: no transport")
+        return False
+
+    waiter = _FrameRawAckWaiter(fid)
+    add_rx_listener(waiter)
+    try:
+        send_line(_frame_raw_begin_command(fid, len(packed), crc))
+        if not waiter.wait("frame_raw_begin", SERIAL_RAW_BEGIN_TIMEOUT_S):
+            log(f"[frame] raw serial error: no frame_raw_begin ack fid={fid}")
+            return False
+
+        for start in range(0, len(packed), SERIAL_RAW_WRITE_SIZE):
+            end = min(start + SERIAL_RAW_WRITE_SIZE, len(packed))
+            TRANSPORT.write(packed[start:end])
+            if SERIAL_RAW_WRITE_DELAY_S > 0:
+                time.sleep(SERIAL_RAW_WRITE_DELAY_S)
+            if end == SERIAL_RAW_WRITE_SIZE or end % 32768 == 0 or end == len(packed):
+                log(f"[frame] raw serial bytes {end}/{len(packed)}")
+
+        if not waiter.wait("frame_raw_end", SERIAL_RAW_END_TIMEOUT_S):
+            log(f"[frame] raw serial error: no frame_raw_end ack fid={fid}")
+            return False
+        return True
+    finally:
+        remove_rx_listener(waiter)
+
+
 # v0.8 architecture C — BLE→Wi-Fi burst.
 # Battery-mode device keeps the Wi-Fi radio off until we ask. When a frame
 # arrives over BLE, we ask via cmd:wifi_wake_now, wait for the device to
@@ -594,6 +689,21 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
             dt = time.time() - t0
             kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
             log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
+                f"{'ok' if ok else 'FAIL'}")
+        return
+
+    if (region is None and len(packed) == FRAME_BYTES
+            and isinstance(TRANSPORT, SerialTransport)
+            and _paper_s3_raw_frame_supported()):
+        with _FRAME_LOCK:
+            _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
+            fid = _FRAME_ID
+            crc = _crc32(packed)
+            t0 = time.time()
+            log(f"[frame] raw serial push start fid={fid} {len(packed)}B crc={crc:08x}")
+            ok = _push_frame_raw_serial(packed, fid, crc)
+            dt = time.time() - t0
+            log(f"[frame] raw serial push fid={fid} {len(packed)}B full ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
         return
 
@@ -752,8 +862,7 @@ def _settings_state() -> dict:
 # Skips entirely if nothing changed. Full-frame fallback when the diff
 # covers more than DIFF_FULL_THRESHOLD of the canvas.
 _LAST_FRAME_IMG = None
-_LAST_FRAME_PATH = os.path.join(
-    os.environ.get("TMPDIR", "/tmp"), "ai_desk_card_last_frame.png")
+_LAST_FRAME_PATH = _daemon_cache_path("ai_desk_card_last_frame.png")
 DIFF_FULL_THRESHOLD = 0.50    # diff area > 50% of canvas → just push full
 DIFF_REGION_ALIGN   = 4       # x/w aligned to multiple of 4 for safe 4bpp packing
 
@@ -853,7 +962,7 @@ def render_and_push():
     take effect without restarting the daemon. Dispatches to the settings
     page renderer when IN_SETTINGS is set. Uses dirty-region diff so the
     typical "one widget changed" path only ships the changed rectangle."""
-    global _FRAME_LAST_PUSH, VIEW_HOT_ZONES
+    global _FRAME_LAST_PUSH, VIEW_HOT_ZONES, _LAST_FRAME_IMG
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render
@@ -884,6 +993,15 @@ def render_and_push():
     # render+push comes back. Send before the push so the firmware has
     # the rects ready when the user starts tapping the new view.
     _send_chip_rects(VIEW_HOT_ZONES)
+
+    if isinstance(TRANSPORT, SerialTransport) and _paper_s3_raw_frame_supported():
+        packed = card_render.to_4bpp_packed(img)
+        _LAST_FRAME_IMG = img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
+        log(f"[diff] paper-s3 raw serial -> full frame {len(packed)}B")
+        push_frame_bytes(packed, region=None)
+        _FRAME_LAST_PUSH = time.time()
+        return
 
     kind, packed, region = _compute_diff(img)
     if kind == "noop":
@@ -1482,6 +1600,7 @@ def main():
         if args.owner:
             send_line({"cmd": "owner", "name": args.owner})
         send_line({"time": [int(time.time()), tz_offset_seconds()]})
+        send_line({"cmd": "ping"})
         if WIDGET_CACHE:
             schedule_push()
 

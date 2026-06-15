@@ -15,6 +15,33 @@ constexpr uint16_t kLightGray = 0xD69A;
 M5Canvas g_canvas(&M5.Display);
 bool g_canvasReady = false;
 
+enum class FrameMap {
+    kDirect,
+    kRotateClockwise,
+    kUnsupported,
+};
+
+uint16_t gray4ToRgb565(uint8_t nibble) {
+    const uint8_t level = 255 - (nibble & 0x0F) * 17;
+    return ((level & 0xF8) << 8) | ((level & 0xFC) << 3) | (level >> 3);
+}
+
+FrameMap selectFrameMap(int32_t logicalW, int32_t logicalH) {
+    const int32_t panelW = g_canvas.width();
+    const int32_t panelH = g_canvas.height();
+    if (panelW == logicalW && panelH == logicalH) return FrameMap::kDirect;
+    if (panelW == logicalH && panelH == logicalW) return FrameMap::kRotateClockwise;
+    return FrameMap::kUnsupported;
+}
+
+const char* frameMapName(FrameMap map) {
+    switch (map) {
+        case FrameMap::kDirect: return "direct";
+        case FrameMap::kRotateClockwise: return "rotate-cw";
+        default: return "unsupported";
+    }
+}
+
 void drawLabelValue(const char* label, const char* value, int32_t x, int32_t y) {
     g_canvas.setTextDatum(top_left);
     g_canvas.setFont(&fonts::FreeSans9pt7b);
@@ -35,7 +62,7 @@ void begin() {
     M5.begin(cfg);
 
     M5.Display.setRotation(1);
-    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    M5.Display.setEpdMode(epd_mode_t::epd_quality);
 
     g_canvas.createSprite(M5.Display.width(), M5.Display.height());
     g_canvasReady = true;
@@ -70,6 +97,12 @@ TouchState readTouch() {
     state.x = detail.x;
     state.y = detail.y;
     return state;
+}
+
+void clearDisplay() {
+    if (!g_canvasReady) return;
+    g_canvas.fillSprite(kWhite);
+    g_canvas.pushSprite(0, 0);
 }
 
 void paintTestScreen(const char* firmwareVersion, const char* ipAddress) {
@@ -125,6 +158,55 @@ void paintTestScreen(const char* firmwareVersion, const char* ipAddress) {
 
     g_canvas.fillRect(40, h - 22, w - 80, 4, kLightGray);
     g_canvas.pushSprite(0, 0);
+}
+
+bool draw4bppFrame(const uint8_t* packed, int32_t width, int32_t height) {
+    if (!g_canvasReady || !packed) {
+        Serial.println("[display] error: canvas not ready or frame buffer null");
+        return false;
+    }
+    if (width <= 0 || height <= 0) {
+        Serial.printf("[display] error: invalid logical frame %ldx%ld\n",
+                      (long)width, (long)height);
+        return false;
+    }
+
+    const FrameMap map = selectFrameMap(width, height);
+    if (map == FrameMap::kUnsupported) {
+        Serial.printf("[display] error: cannot map logical=%ldx%ld to panel=%ldx%ld\n",
+                      (long)width, (long)height,
+                      (long)g_canvas.width(), (long)g_canvas.height());
+        return false;
+    }
+
+    const uint32_t startMs = millis();
+    Serial.printf("[display] update start logical=%ldx%ld panel=%ldx%ld map=%s epd=quality\n",
+                  (long)width, (long)height,
+                  (long)g_canvas.width(), (long)g_canvas.height(),
+                  frameMapName(map));
+
+    const size_t rowBytes = (size_t)(width + 1) / 2;
+    for (int32_t y = 0; y < height; ++y) {
+        const size_t row = (size_t)y * rowBytes;
+        for (int32_t x = 0; x < width; x += 2) {
+            const uint8_t b = packed[row + (size_t)x / 2];
+            const uint16_t c0 = gray4ToRgb565(b >> 4);
+            const uint16_t c1 = gray4ToRgb565(b & 0x0F);
+
+            if (map == FrameMap::kDirect) {
+                g_canvas.drawPixel(x, y, c0);
+                if (x + 1 < width) g_canvas.drawPixel(x + 1, y, c1);
+            } else {
+                g_canvas.drawPixel(y, width - 1 - x, c0);
+                if (x + 1 < width) g_canvas.drawPixel(y, width - 2 - x, c1);
+            }
+        }
+    }
+
+    g_canvas.pushSprite(0, 0);
+    Serial.printf("[display] update end ms=%lu\n",
+                  (unsigned long)(millis() - startMs));
+    return true;
 }
 
 }  // namespace paper_s3

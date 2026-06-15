@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <esp_mac.h>
 
+#include "paper_s3_frame_receiver.h"
 #include "paper_s3_hw.h"
 
 #ifndef CARD_VERSION
@@ -13,7 +14,7 @@
 namespace {
 
 char g_macStr[18] = "00:00:00:00:00:00";
-char g_lineBuf[512];
+char g_lineBuf[8192];
 size_t g_lineLen = 0;
 
 void cacheMacAddress() {
@@ -25,18 +26,19 @@ void cacheMacAddress() {
 
 void emitStatusReport() {
     const paper_s3::PowerState power = paper_s3::readPower();
-    char line[384];
+    char line[512];
     const int n = snprintf(
         line, sizeof(line),
         "{\"ack\":\"status\",\"device\":\"%s\",\"fw\":\"%s\",\"proto\":%d,"
         "\"mac\":\"%s\",\"uptime_s\":%lu,\"battery_pct\":%ld,"
         "\"battery_mv\":%d,\"on_usb\":%s,\"charging\":%s,"
         "\"wifi_connected\":false,\"wifi_ssid\":\"\",\"wifi_ip\":\"%s\","
-        "\"wifi_rssi\":-127}\n",
+        "\"wifi_rssi\":-127,\"frame_state\":\"%s\"}\n",
         paper_s3::kDeviceName, CARD_VERSION, CARD_PROTO, g_macStr,
         (unsigned long)(millis() / 1000), (long)power.batteryPercent,
         (int)power.batteryMillivolts, power.usbPresent ? "true" : "false",
-        power.charging ? "true" : "false", paper_s3::kIpPlaceholder);
+        power.charging ? "true" : "false", paper_s3::kIpPlaceholder,
+        paper_s3_frame::stateName());
     if (n > 0) Serial.print(line);
 }
 
@@ -54,7 +56,13 @@ void processJsonLine(const char* line) {
         return;
     }
 
-    Serial.printf("[rx] cmd=%s\n", cmd);
+    if (strcmp(cmd, "frame_chunk") != 0) {
+        Serial.printf("[rx] cmd=%s\n", cmd);
+    }
+    if (paper_s3_frame::handleCommand(doc)) {
+        return;
+    }
+
     if (strcmp(cmd, "ping") == 0) {
         emitStatusReport();
         return;
@@ -73,6 +81,19 @@ void processJsonLine(const char* line) {
 
 void pollSerialCommands() {
     while (Serial.available()) {
+        if (paper_s3_frame::wantsRawBytes()) {
+            uint8_t rawBuf[256];
+            const int available = Serial.available();
+            const size_t toRead = available < (int)sizeof(rawBuf)
+                ? (size_t)available
+                : sizeof(rawBuf);
+            const int n = Serial.read(rawBuf, toRead);
+            if (n > 0) {
+                paper_s3_frame::appendRawBytes(rawBuf, (size_t)n);
+            }
+            continue;
+        }
+
         const int b = Serial.read();
         if (b < 0) break;
         if (b == '\n' || b == '\r') {
@@ -85,7 +106,8 @@ void pollSerialCommands() {
             g_lineBuf[g_lineLen++] = (char)b;
         } else {
             g_lineLen = 0;
-            Serial.println("[rx] line too long; dropped");
+            Serial.printf("[rx] line too long; dropped limit=%u\n",
+                          (unsigned)sizeof(g_lineBuf));
         }
     }
 }
@@ -102,6 +124,11 @@ void logBootSummary() {
                   (long)paper_s3::displayWidth(), (long)paper_s3::displayHeight());
     Serial.printf("[boot] heap=%u psram=%u\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getPsramSize());
+    Serial.printf("[frame] receiver=%s logical=%dx%d bytes=%u\n",
+                  paper_s3_frame::stateName(),
+                  paper_s3_frame::kFrameWidth,
+                  paper_s3_frame::kFrameHeight,
+                  (unsigned)paper_s3_frame::kFrameBytes4bpp);
     Serial.printf("[power] usb=%s charging=%s battery=%ld%% battery_mv=%d\n",
                   power.usbPresent ? "yes" : "no",
                   power.charging ? "yes" : "no",
@@ -126,6 +153,7 @@ void logTouchTransitions() {
 }  // namespace
 
 void setup() {
+    Serial.setRxBufferSize(16384);
     Serial.begin(115200);
     delay(1500);
     Serial.println();
@@ -137,12 +165,13 @@ void setup() {
     paper_s3::begin();
     Serial.println("[probe] M5.begin returned");
     Serial.flush();
+    paper_s3_frame::begin();
     cacheMacAddress();
     logBootSummary();
 
     paper_s3::paintTestScreen(CARD_VERSION, paper_s3::kIpPlaceholder);
     Serial.println("[display] PaperS3 test screen pushed");
-    Serial.println("[boot] ready; send {\"cmd\":\"ping\"} for status JSON");
+    Serial.println("[boot] ready; send {\"cmd\":\"ping\"} or frame_begin/frame_chunk/frame_end");
     emitStatusReport();
 }
 
@@ -153,7 +182,7 @@ void loop() {
 
     static uint32_t s_lastStatusMs = 0;
     const uint32_t now = millis();
-    if (now - s_lastStatusMs > 60000) {
+    if (!paper_s3_frame::isReceiving() && now - s_lastStatusMs > 60000) {
         s_lastStatusMs = now;
         emitStatusReport();
     }

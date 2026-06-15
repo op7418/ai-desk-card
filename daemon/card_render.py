@@ -965,19 +965,22 @@ def render_image(widget_snapshot: Iterable[dict],
                 d.text((rect[0] + 16, rect[1] + 16),
                        f"render err: {e!r}", fill=INK_BLACK, font=font())
 
-    for slot, rect in SLOT_RECTS.items():
-        if slot == "full" or slot in seen:
-            continue
-        paint_empty(d, rect)
+    has_full = "full" in seen
+    if not has_full:
+        for slot, rect in SLOT_RECTS.items():
+            if slot == "full" or slot in seen:
+                continue
+            paint_empty(d, rect)
 
     # Structural dividers — drawn AFTER widget content so they sit on top
     # of any widget chrome and bind the grid together visually. Made
     # generously chunky (~4-8 px) so 4bpp packing + e-ink low-contrast
     # don't smear them into invisibility.
-    mid_y = SLOT_RECTS["middle"][1]
+    if not has_full:
+        mid_y = SLOT_RECTS["middle"][1]
 
-    # Single vertical 3 px black line between top-left / top-right.
-    d.rectangle((269, 16, 272, mid_y - 16), fill=INK_BLACK)
+        # Single vertical 3 px black line between top-left / top-right.
+        d.rectangle((269, 16, 272, mid_y - 16), fill=INK_BLACK)
 
     # Bottom status/settings bar (always rendered).
     paint_bottom_bar(d, status or {})
