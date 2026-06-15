@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <esp_mac.h>
+#include <string.h>
 
 #include "paper_s3_frame_receiver.h"
 #include "paper_s3_hw.h"
@@ -11,11 +12,26 @@
 
 #define CARD_PROTO 1
 
+#ifndef PAPER_S3_TOUCH_DEBUG
+#define PAPER_S3_TOUCH_DEBUG 1
+#endif
+
 namespace {
 
 char g_macStr[18] = "00:00:00:00:00:00";
 char g_lineBuf[8192];
 size_t g_lineLen = 0;
+
+struct TouchChip {
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t w = 0;
+    int16_t h = 0;
+    char id[16] = "";
+};
+
+TouchChip g_chips[8];
+int g_chipCount = 0;
 
 void cacheMacAddress() {
     uint8_t mac[6] = {0};
@@ -42,6 +58,87 @@ void emitStatusReport() {
     if (n > 0) Serial.print(line);
 }
 
+const char* touchEventName(paper_s3::TouchState::Event event) {
+    switch (event) {
+        case paper_s3::TouchState::Event::Down: return "down";
+        case paper_s3::TouchState::Event::Move: return "move";
+        case paper_s3::TouchState::Event::Up: return "up";
+        default: return "none";
+    }
+}
+
+int chipHitIndex(int32_t x, int32_t y) {
+    for (int i = 0; i < g_chipCount; ++i) {
+        const TouchChip& c = g_chips[i];
+        if (x >= c.x && x < c.x + c.w &&
+            y >= c.y && y < c.y + c.h) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void handleSetChips(JsonDocument& doc) {
+    JsonArray arr = doc["rects"].as<JsonArray>();
+    int n = 0;
+    for (JsonObject r : arr) {
+        if (n >= (int)(sizeof(g_chips) / sizeof(g_chips[0]))) break;
+        TouchChip& c = g_chips[n];
+        c.x = (int16_t)(r["x"] | 0);
+        c.y = (int16_t)(r["y"] | 0);
+        c.w = (int16_t)(r["w"] | 0);
+        c.h = (int16_t)(r["h"] | 0);
+        const char* id = r["id"] | "";
+        strncpy(c.id, id, sizeof(c.id) - 1);
+        c.id[sizeof(c.id) - 1] = '\0';
+        n++;
+    }
+    g_chipCount = n;
+    Serial.printf("{\"ack\":\"set_chips\",\"n\":%d}\n", n);
+#if PAPER_S3_TOUCH_DEBUG
+    Serial.printf("[touch] hit zones updated count=%d\n", n);
+    for (int i = 0; i < n; ++i) {
+        const TouchChip& c = g_chips[i];
+        Serial.printf("[touch] hit zone id=%s rect=(%d,%d,%d,%d)\n",
+                      c.id, c.x, c.y, c.w, c.h);
+    }
+#endif
+}
+
+void logTouchInitStatus() {
+    const bool ready = paper_s3::touchReady();
+    Serial.printf("[touch] init %s enabled=%s map=%s logical=%dx%d panel=%ldx%ld\n",
+                  ready ? "success" : "failure",
+                  ready ? "true" : "false",
+                  paper_s3::touchMapName(),
+                  paper_s3::kLogicalFrameWidth,
+                  paper_s3::kLogicalFrameHeight,
+                  (long)paper_s3::displayWidth(),
+                  (long)paper_s3::displayHeight());
+    if (ready) {
+        Serial.println("[touch] subsystem ready");
+    }
+}
+
+void logTouchEvent(const paper_s3::TouchState& touch) {
+#if PAPER_S3_TOUCH_DEBUG
+    if (touch.event == paper_s3::TouchState::Event::None) return;
+    Serial.printf("[touch] event=%s count=%u raw=(%ld,%ld) screen=(%ld,%ld) mapped=(%ld,%ld)\n",
+                  touchEventName(touch.event),
+                  (unsigned)touch.count,
+                  (long)touch.rawX, (long)touch.rawY,
+                  (long)touch.screenX, (long)touch.screenY,
+                  (long)touch.x, (long)touch.y);
+#else
+    (void)touch;
+#endif
+}
+
+void emitTouchEvent(int32_t x, int32_t y, uint32_t holdMs) {
+    Serial.printf("{\"event\":\"touch\",\"x\":%ld,\"y\":%ld,\"hold_ms\":%lu}\n",
+                  (long)x, (long)y, (unsigned long)holdMs);
+}
+
 void processJsonLine(const char* line) {
     JsonDocument doc;
     const DeserializationError err = deserializeJson(doc, line);
@@ -60,6 +157,11 @@ void processJsonLine(const char* line) {
         Serial.printf("[rx] cmd=%s\n", cmd);
     }
     if (paper_s3_frame::handleCommand(doc)) {
+        return;
+    }
+
+    if (strcmp(cmd, "set_chips") == 0) {
+        handleSetChips(doc);
         return;
     }
 
@@ -139,15 +241,99 @@ void logBootSummary() {
     Serial.println("[feature] deep sleep disabled in phase 1");
 }
 
-void logTouchTransitions() {
-    static bool s_wasPressed = false;
+void pollTouchAndEmit() {
+    static bool s_tracking = false;
+    static bool s_haveAcceptedClick = false;
+    static uint32_t s_downMs = 0;
+    static uint32_t s_lastAcceptedMs = 0;
+    static int32_t s_lastX = 0;
+    static int32_t s_lastY = 0;
+
+    constexpr uint32_t kTapMinMs = 30;
+    constexpr uint32_t kTapMaxMs = 2000;
+    constexpr uint32_t kClickDebounceMs = 250;
+
     const paper_s3::TouchState touch = paper_s3::readTouch();
-    if (touch.pressed && !s_wasPressed) {
-        Serial.printf("[touch] down x=%ld y=%ld\n", (long)touch.x, (long)touch.y);
-    } else if (!touch.pressed && s_wasPressed) {
-        Serial.println("[touch] up");
+    logTouchEvent(touch);
+
+    const uint32_t now = millis();
+    if (touch.event == paper_s3::TouchState::Event::Down) {
+        s_tracking = true;
+        s_downMs = now;
+        s_lastX = touch.x;
+        s_lastY = touch.y;
+        return;
     }
-    s_wasPressed = touch.pressed;
+
+    if (touch.event == paper_s3::TouchState::Event::Move) {
+        if (s_tracking) {
+            s_lastX = touch.x;
+            s_lastY = touch.y;
+        }
+        return;
+    }
+
+    if (touch.event != paper_s3::TouchState::Event::Up) {
+        return;
+    }
+
+    if (!s_tracking) {
+#if PAPER_S3_TOUCH_DEBUG
+        Serial.println("[touch] click ignored reason=up-without-down");
+#endif
+        return;
+    }
+
+    s_tracking = false;
+    s_lastX = touch.x;
+    s_lastY = touch.y;
+    const uint32_t holdMs = now - s_downMs;
+    const int hit = chipHitIndex(s_lastX, s_lastY);
+    const char* target = hit >= 0 ? g_chips[hit].id : "none";
+
+#if PAPER_S3_TOUCH_DEBUG
+    if (hit >= 0) {
+        const TouchChip& c = g_chips[hit];
+        Serial.printf("[touch] hit target id=%s rect=(%d,%d,%d,%d)\n",
+                      target, c.x, c.y, c.w, c.h);
+    } else {
+        Serial.println("[touch] hit target id=none");
+    }
+#endif
+
+    if (holdMs < kTapMinMs) {
+#if PAPER_S3_TOUCH_DEBUG
+        Serial.printf("[touch] click ignored reason=too-short hold_ms=%lu min_ms=%lu target=%s\n",
+                      (unsigned long)holdMs, (unsigned long)kTapMinMs, target);
+#endif
+        return;
+    }
+
+    if (holdMs > kTapMaxMs) {
+#if PAPER_S3_TOUCH_DEBUG
+        Serial.printf("[touch] click ignored reason=too-long hold_ms=%lu max_ms=%lu target=%s\n",
+                      (unsigned long)holdMs, (unsigned long)kTapMaxMs, target);
+#endif
+        return;
+    }
+
+    if (s_haveAcceptedClick && now - s_lastAcceptedMs < kClickDebounceMs) {
+#if PAPER_S3_TOUCH_DEBUG
+        Serial.printf("[touch] click ignored reason=debounce elapsed_ms=%lu min_ms=%lu target=%s\n",
+                      (unsigned long)(now - s_lastAcceptedMs),
+                      (unsigned long)kClickDebounceMs, target);
+#endif
+        return;
+    }
+
+    s_haveAcceptedClick = true;
+    s_lastAcceptedMs = now;
+#if PAPER_S3_TOUCH_DEBUG
+    Serial.printf("[touch] click accepted target=%s x=%ld y=%ld hold_ms=%lu\n",
+                  target, (long)s_lastX, (long)s_lastY,
+                  (unsigned long)holdMs);
+#endif
+    emitTouchEvent(s_lastX, s_lastY, holdMs);
 }
 
 }  // namespace
@@ -165,12 +351,13 @@ void setup() {
     paper_s3::begin();
     Serial.println("[probe] M5.begin returned");
     Serial.flush();
+    logTouchInitStatus();
     paper_s3_frame::begin();
     cacheMacAddress();
     logBootSummary();
 
-    paper_s3::paintTestScreen(CARD_VERSION, paper_s3::kIpPlaceholder);
-    Serial.println("[display] PaperS3 test screen pushed");
+    paper_s3::paintTouchCalibrationScreen(CARD_VERSION);
+    Serial.println("[display] PaperS3 touch calibration screen pushed");
     Serial.println("[boot] ready; send {\"cmd\":\"ping\"} or frame_begin/frame_chunk/frame_end");
     emitStatusReport();
 }
@@ -178,7 +365,7 @@ void setup() {
 void loop() {
     paper_s3::update();
     pollSerialCommands();
-    logTouchTransitions();
+    pollTouchAndEmit();
 
     static uint32_t s_lastStatusMs = 0;
     const uint32_t now = millis();

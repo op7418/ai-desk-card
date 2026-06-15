@@ -62,17 +62,44 @@ _FONT_PATHS_REGULAR = [
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "C:/Windows/Fonts/msyh.ttc",       # Microsoft YaHei
+    "C:/Windows/Fonts/simhei.ttf",     # SimHei
+    "C:/Windows/Fonts/simsun.ttc",     # SimSun
+    "C:/Windows/Fonts/msjh.ttc",       # Microsoft JhengHei
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 ]
 _FONT_PATHS_BOLD = [
     "/System/Library/Fonts/PingFang.ttc",   # bold via index
     "/System/Library/Fonts/STHeiti Medium.ttc",
+    "C:/Windows/Fonts/msyhbd.ttc",     # Microsoft YaHei Bold
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/msjhbd.ttc",     # Microsoft JhengHei Bold
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
 ]
 
 BODY_SIZE = 28
 
 _font_cache: dict = {}
+
+def _font_candidates(paths: list[str], bold: bool = False):
+    for p in paths:
+        # Windows separates bold faces into their own files, so index 0 is
+        # correct there. PingFang keeps bold at index 1 in the same TTC.
+        index = 1 if bold and "PingFang.ttc" in p else 0
+        yield p, index
+
+
+def _load_truetype(paths: list[str], size: int, bold: bool = False):
+    for p, index in _font_candidates(paths, bold):
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size, index=index)
+            except Exception:
+                continue
+    return None
+
 
 def font(bold: bool = False):
     """Return the single-size font. v0.6 design decision: one size, period."""
@@ -80,14 +107,10 @@ def font(bold: bool = False):
     if key in _font_cache:
         return _font_cache[key]
     paths = _FONT_PATHS_BOLD if bold else _FONT_PATHS_REGULAR
-    for p in paths:
-        if os.path.exists(p):
-            try:
-                f = ImageFont.truetype(p, BODY_SIZE, index=1 if bold else 0)
-                _font_cache[key] = f
-                return f
-            except Exception:
-                continue
+    f = _load_truetype(paths, BODY_SIZE, bold=bold)
+    if f is not None:
+        _font_cache[key] = f
+        return f
     f = ImageFont.load_default()
     _font_cache[key] = f
     return f
@@ -101,14 +124,10 @@ def font_bar():
     key = ("bar", 22)
     if key in _font_cache:
         return _font_cache[key]
-    for p in _FONT_PATHS_REGULAR:
-        if os.path.exists(p):
-            try:
-                f = ImageFont.truetype(p, 22, index=0)
-                _font_cache[key] = f
-                return f
-            except Exception:
-                continue
+    f = _load_truetype(_FONT_PATHS_REGULAR, 22)
+    if f is not None:
+        _font_cache[key] = f
+        return f
     return font()
 
 
@@ -116,14 +135,10 @@ def font_bar_bold():
     key = ("bar-bold", 22)
     if key in _font_cache:
         return _font_cache[key]
-    for p in _FONT_PATHS_BOLD:
-        if os.path.exists(p):
-            try:
-                f = ImageFont.truetype(p, 22, index=1)
-                _font_cache[key] = f
-                return f
-            except Exception:
-                continue
+    f = _load_truetype(_FONT_PATHS_BOLD, 22, bold=True)
+    if f is not None:
+        _font_cache[key] = f
+        return f
     return font(bold=True)
 
 
@@ -133,14 +148,10 @@ def font_header():
     key = ("header", 32)
     if key in _font_cache:
         return _font_cache[key]
-    for p in _FONT_PATHS_BOLD:
-        if os.path.exists(p):
-            try:
-                f = ImageFont.truetype(p, 32, index=1)
-                _font_cache[key] = f
-                return f
-            except Exception:
-                continue
+    f = _load_truetype(_FONT_PATHS_BOLD, 32, bold=True)
+    if f is not None:
+        _font_cache[key] = f
+        return f
     return font(bold=True)
 
 
@@ -919,21 +930,25 @@ def paint_bottom_bar(d: "ImageDraw.ImageDraw", status: dict):
 
     actions = [("睡眠", "sleep"), ("设置", "settings")]
     chip_pad = 20
+    min_chip_w = 104
     sep_w = 14
-    total_w = sum(d.textlength(lbl, font=f_b) for lbl, _ in actions) \
-            + chip_pad * 2 * len(actions) \
-            + sep_w * (len(actions) - 1)
+    chip_ws = [
+        max(int(d.textlength(lbl, font=f_b)) + chip_pad * 2, min_chip_w)
+        for lbl, _ in actions
+    ]
+    total_w = sum(chip_ws) + sep_w * (len(actions) - 1)
     chip_x = CANVAS_W - pad - total_w
     if chip_x < cx + 16:
         return   # left + right would collide; safer to skip right zone
 
-    for i, (label, action) in enumerate(actions):
+    for i, ((label, action), chip_w) in enumerate(zip(actions, chip_ws)):
         if i > 0:
             d.line((chip_x, bar_y + 14, chip_x, bar_y + bar_h - 14),
                    fill=140, width=1)
             chip_x += sep_w
-        d.text((chip_x + chip_pad, text_y), label, fill=255, font=f_b)
-        chip_w = int(d.textlength(label, font=f_b)) + chip_pad * 2
+        label_w = int(d.textlength(label, font=f_b))
+        d.text((chip_x + (chip_w - label_w) // 2, text_y),
+               label, fill=255, font=f_b)
         # Whole-bar-height tap target so users don't need to land inside the
         # text — chip rect spans full BOTTOM_BAR_H, not just the text band.
         LAST_BOTTOM_BAR_HOT_ZONES.append({

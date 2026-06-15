@@ -422,6 +422,16 @@ def _touch_event_listener(line: str):
         log(f"[touch<] ({x},{y}) → no zone match")
         return
     log(f"[touch<] ({x},{y}) → {action}")
+    _dispatch_touch_action(action)
+
+
+def _dispatch_touch_action(action: str):
+    if action == "sleep":
+        # Sleep renders and pushes a full frame before sending sleep_now.
+        # Do it off the serial reader thread so raw-frame ack lines can be
+        # read while the push waits for them.
+        threading.Thread(target=_internal_dispatch, args=(action,), daemon=True).start()
+        return
     _internal_dispatch(action)
 
 
@@ -847,7 +857,7 @@ def _settings_state() -> dict:
     transport_name = (type(TRANSPORT).__name__.replace("Transport", "").upper()
                       if TRANSPORT else "—")
     state = dict(DEVICE_TELEMETRY)   # battery, firmware, mac, uptime, battery_mv ...
-    state.setdefault("model", "M5Paper V1.1")
+    state.setdefault("model", state.get("device", "M5Paper V1.1"))
     state["transport"] = transport_name
     state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
     state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
@@ -988,20 +998,24 @@ def render_and_push():
         log(f"[render] failed: {e!r}")
         return
 
-    # v0.9: tell the firmware which rectangles are currently tappable, so
-    # it can paint a fast partial-refresh tap-ack (~150ms) before our
-    # render+push comes back. Send before the push so the firmware has
-    # the rects ready when the user starts tapping the new view.
-    _send_chip_rects(VIEW_HOT_ZONES)
-
     if isinstance(TRANSPORT, SerialTransport) and _paper_s3_raw_frame_supported():
         packed = card_render.to_4bpp_packed(img)
         _LAST_FRAME_IMG = img.copy()
         _persist_last_frame(_LAST_FRAME_IMG)
         log(f"[diff] paper-s3 raw serial -> full frame {len(packed)}B")
         push_frame_bytes(packed, region=None)
+        # PaperS3's raw serial frame stream monopolizes the device parser
+        # until frame_raw_end. Send the current hit rects after the frame so
+        # touch tests on the freshly painted UI have zones immediately.
+        _send_chip_rects(VIEW_HOT_ZONES, force=True)
         _FRAME_LAST_PUSH = time.time()
         return
+
+    # v0.9: tell the firmware which rectangles are currently tappable, so
+    # it can paint a fast partial-refresh tap-ack (~150ms) before our
+    # render+push comes back. Send before the push so the firmware has
+    # the rects ready when the user starts tapping the new view.
+    _send_chip_rects(VIEW_HOT_ZONES)
 
     kind, packed, region = _compute_diff(img)
     if kind == "noop":
@@ -1013,7 +1027,7 @@ def render_and_push():
 
 _LAST_CHIP_SIG = ""
 
-def _send_chip_rects(zones: list):
+def _send_chip_rects(zones: list, force: bool = False):
     """Push the current view's tappable rects to the firmware. Skipped if
     the rect set hasn't changed since the last send (most frames repaint
     the same hot zones)."""
@@ -1025,9 +1039,11 @@ def _send_chip_rects(zones: list):
                       "w": int(x1 - x0), "h": int(y1 - y0),
                       "id": str(hz["action"])[:15]})
     sig = json.dumps(rects, sort_keys=True)
-    if sig == _LAST_CHIP_SIG:
+    if not force and sig == _LAST_CHIP_SIG:
+        log(f"[touch>] chip rects unchanged n={len(rects)}")
         return
     _LAST_CHIP_SIG = sig
+    log(f"[touch>] sending chip rects n={len(rects)} force={force}")
     send_line({"cmd": "set_chips", "rects": rects})
 
 
@@ -1371,10 +1387,19 @@ def _internal_dispatch(action: str) -> dict:
     if action == "back":
         with VIEW_LOCK: IN_SETTINGS = False
         schedule_push(); return {"action": "back"}
+    if action == "refresh":
+        schedule_push(); return {"action": "refresh"}
     if action == "sleep":
         if render_and_push_sleep():
             send_line({"cmd": "sleep_now", "wake_after_sec": 0})
         return {"action": "sleep"}
+    if action == "restart":
+        send_line({"cmd": "restart"}); return {"action": "restart"}
+    if action == "repair":
+        send_line({"cmd": "unpair"}); return {"action": "repair"}
+    if action == "clear":
+        with WIDGET_LOCK: WIDGET_CACHE.clear()
+        schedule_push(); return {"action": "clear"}
     return {"action": action}
 
 

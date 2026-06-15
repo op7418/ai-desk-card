@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import tempfile
+import time
 import unittest
 
 
@@ -65,6 +66,8 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         card_daemon.SERIAL_RAW_WRITE_DELAY_S = self.old_write_delay
         card_daemon.SERIAL_RAW_BEGIN_TIMEOUT_S = self.old_begin_timeout
         card_daemon.SERIAL_RAW_END_TIMEOUT_S = self.old_end_timeout
+        card_daemon.VIEW_HOT_ZONES = []
+        card_daemon._FRAME_DIRTY.clear()
         with card_daemon._RX_LISTENERS_LOCK:
             card_daemon._RX_LISTENERS.clear()
 
@@ -121,6 +124,63 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.assertEqual(commands[0]["bytes"], card_daemon.FRAME_BYTES)
         self.assertEqual(fake.raw_payload, packed)
         self.assertNotIn("frame_chunk", [cmd.get("cmd") for cmd in commands])
+
+    def test_serial_touch_listener_dispatches_refresh_action(self):
+        card_daemon.VIEW_HOT_ZONES = [
+            {"action": "refresh", "rect": (0, 900, 160, 960)}
+        ]
+        card_daemon._FRAME_DIRTY.clear()
+
+        card_daemon._touch_event_listener(
+            '{"event":"touch","x":80,"y":930,"hold_ms":120}'
+        )
+
+        self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
+
+    def test_serial_touch_listener_dispatches_restart_action(self):
+        fake = FakeRawSerialTransport()
+        card_daemon.TRANSPORT = fake
+        card_daemon.VIEW_HOT_ZONES = [
+            {"action": "restart", "rect": (0, 100, 540, 160)}
+        ]
+
+        card_daemon._touch_event_listener(
+            '{"event":"touch","x":100,"y":120,"hold_ms":120}'
+        )
+
+        commands = [
+            json.loads(line.decode("utf-8").strip())
+            for line in fake.json_lines
+        ]
+        self.assertIn({"cmd": "restart"}, commands)
+
+    def test_serial_touch_listener_dispatches_sleep_without_blocking_reader(self):
+        calls = []
+        old_dispatch = card_daemon._internal_dispatch
+
+        def slow_dispatch(action):
+            time.sleep(0.2)
+            calls.append(action)
+            return {"action": action}
+
+        card_daemon._internal_dispatch = slow_dispatch
+        card_daemon.VIEW_HOT_ZONES = [
+            {"action": "sleep", "rect": (0, 900, 160, 960)}
+        ]
+        try:
+            start = time.time()
+            card_daemon._touch_event_listener(
+                '{"event":"touch","x":80,"y":930,"hold_ms":120}'
+            )
+            elapsed = time.time() - start
+
+            self.assertLess(elapsed, 0.1)
+            deadline = time.time() + 1.0
+            while not calls and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(calls, ["sleep"])
+        finally:
+            card_daemon._internal_dispatch = old_dispatch
 
 
 if __name__ == "__main__":

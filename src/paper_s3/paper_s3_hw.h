@@ -17,9 +17,23 @@ struct PowerState {
 };
 
 struct TouchState {
+    enum class Event : uint8_t {
+        None,
+        Down,
+        Move,
+        Up,
+    };
+
+    bool ready = false;
     bool pressed = false;
-    int32_t x = 0;
-    int32_t y = 0;
+    Event event = Event::None;
+    uint8_t count = 0;
+    int32_t rawX = -1;
+    int32_t rawY = -1;
+    int32_t screenX = -1;
+    int32_t screenY = -1;
+    int32_t x = 0;  // mapped logical 540x960 coordinate
+    int32_t y = 0;  // mapped logical 540x960 coordinate
 };
 
 void begin();
@@ -29,10 +43,13 @@ int32_t displayWidth();
 int32_t displayHeight();
 
 PowerState readPower();
+bool touchReady();
+const char* touchMapName();
 TouchState readTouch();
 
 void clearDisplay();
 void paintTestScreen(const char* firmwareVersion, const char* ipAddress);
+void paintTouchCalibrationScreen(const char* firmwareVersion);
 bool draw4bppFrame(const uint8_t* packed, int32_t width, int32_t height);
 
 }  // namespace paper_s3

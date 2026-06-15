@@ -21,6 +21,12 @@ enum class FrameMap {
     kUnsupported,
 };
 
+enum class TouchMap {
+    kDirect,
+    kRotateClockwiseFrame,
+    kScaled,
+};
+
 uint16_t gray4ToRgb565(uint8_t nibble) {
     const uint8_t level = 255 - (nibble & 0x0F) * 17;
     return ((level & 0xF8) << 8) | ((level & 0xFC) << 3) | (level >> 3);
@@ -42,6 +48,82 @@ const char* frameMapName(FrameMap map) {
     }
 }
 
+int32_t clampCoord(int32_t value, int32_t minValue, int32_t maxValue) {
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
+
+TouchMap selectTouchMap() {
+    const int32_t panelW = g_canvas.width();
+    const int32_t panelH = g_canvas.height();
+    if (panelW == kLogicalFrameWidth && panelH == kLogicalFrameHeight) {
+        return TouchMap::kDirect;
+    }
+    if (panelW == kLogicalFrameHeight && panelH == kLogicalFrameWidth) {
+        return TouchMap::kRotateClockwiseFrame;
+    }
+    return TouchMap::kScaled;
+}
+
+void mapScreenToLogical(int32_t screenX, int32_t screenY,
+                        int32_t* logicalX, int32_t* logicalY) {
+    if (!logicalX || !logicalY) return;
+
+    const TouchMap map = selectTouchMap();
+    if (map == TouchMap::kDirect) {
+        *logicalX = clampCoord(screenX, 0, kLogicalFrameWidth - 1);
+        *logicalY = clampCoord(screenY, 0, kLogicalFrameHeight - 1);
+        return;
+    }
+
+    if (map == TouchMap::kRotateClockwiseFrame) {
+        *logicalX = clampCoord(kLogicalFrameWidth - 1 - screenY,
+                               0, kLogicalFrameWidth - 1);
+        *logicalY = clampCoord(screenX, 0, kLogicalFrameHeight - 1);
+        return;
+    }
+
+    const int32_t panelW = g_canvas.width() > 0 ? g_canvas.width() : 1;
+    const int32_t panelH = g_canvas.height() > 0 ? g_canvas.height() : 1;
+    *logicalX = clampCoord((screenX * kLogicalFrameWidth) / panelW,
+                           0, kLogicalFrameWidth - 1);
+    *logicalY = clampCoord((screenY * kLogicalFrameHeight) / panelH,
+                           0, kLogicalFrameHeight - 1);
+}
+
+void mapLogicalToScreen(int32_t logicalX, int32_t logicalY,
+                        int32_t* screenX, int32_t* screenY) {
+    if (!screenX || !screenY) return;
+
+    const TouchMap map = selectTouchMap();
+    if (map == TouchMap::kDirect) {
+        *screenX = clampCoord(logicalX, 0, g_canvas.width() - 1);
+        *screenY = clampCoord(logicalY, 0, g_canvas.height() - 1);
+        return;
+    }
+
+    if (map == TouchMap::kRotateClockwiseFrame) {
+        *screenX = clampCoord(logicalY, 0, g_canvas.width() - 1);
+        *screenY = clampCoord(kLogicalFrameWidth - 1 - logicalX,
+                              0, g_canvas.height() - 1);
+        return;
+    }
+
+    *screenX = clampCoord((logicalX * g_canvas.width()) / kLogicalFrameWidth,
+                          0, g_canvas.width() - 1);
+    *screenY = clampCoord((logicalY * g_canvas.height()) / kLogicalFrameHeight,
+                          0, g_canvas.height() - 1);
+}
+
+const char* touchMapNameFor(TouchMap map) {
+    switch (map) {
+        case TouchMap::kDirect: return "direct";
+        case TouchMap::kRotateClockwiseFrame: return "rotate-cw-inverse";
+        default: return "scaled";
+    }
+}
+
 void drawLabelValue(const char* label, const char* value, int32_t x, int32_t y) {
     g_canvas.setTextDatum(top_left);
     g_canvas.setFont(&fonts::FreeSans9pt7b);
@@ -51,6 +133,29 @@ void drawLabelValue(const char* label, const char* value, int32_t x, int32_t y) 
     g_canvas.setFont(&fonts::FreeSansBold12pt7b);
     g_canvas.setTextColor(kBlack);
     g_canvas.drawString(value, x, y + 24);
+}
+
+void drawLogicalTarget(const char* label,
+                       int32_t targetX, int32_t targetY,
+                       int32_t labelX, int32_t labelY,
+                       textdatum_t datum) {
+    int32_t screenTargetX = 0;
+    int32_t screenTargetY = 0;
+    mapLogicalToScreen(targetX, targetY, &screenTargetX, &screenTargetY);
+
+    g_canvas.drawCircle(screenTargetX, screenTargetY, 14, kBlack);
+    g_canvas.drawLine(screenTargetX - 20, screenTargetY,
+                      screenTargetX + 20, screenTargetY, kBlack);
+    g_canvas.drawLine(screenTargetX, screenTargetY - 20,
+                      screenTargetX, screenTargetY + 20, kBlack);
+
+    int32_t screenLabelX = 0;
+    int32_t screenLabelY = 0;
+    mapLogicalToScreen(labelX, labelY, &screenLabelX, &screenLabelY);
+    g_canvas.setTextDatum(datum);
+    g_canvas.setFont(&fonts::FreeSansBold12pt7b);
+    g_canvas.setTextColor(kBlack);
+    g_canvas.drawString(label, screenLabelX, screenLabelY);
 }
 
 }  // namespace
@@ -90,12 +195,35 @@ PowerState readPower() {
     return state;
 }
 
+bool touchReady() {
+    return M5.Touch.isEnabled();
+}
+
+const char* touchMapName() {
+    return touchMapNameFor(selectTouchMap());
+}
+
 TouchState readTouch() {
-    const auto detail = M5.Touch.getDetail();
     TouchState state;
+    state.ready = touchReady();
+    state.count = M5.Touch.getCount();
+
+    const auto detail = M5.Touch.getDetail();
+    const auto raw = M5.Touch.getTouchPointRaw(0);
     state.pressed = detail.isPressed();
-    state.x = detail.x;
-    state.y = detail.y;
+    if (detail.wasPressed()) {
+        state.event = TouchState::Event::Down;
+    } else if (detail.wasReleased()) {
+        state.event = TouchState::Event::Up;
+    } else if (state.pressed) {
+        state.event = TouchState::Event::Move;
+    }
+
+    state.rawX = raw.x;
+    state.rawY = raw.y;
+    state.screenX = detail.x;
+    state.screenY = detail.y;
+    mapScreenToLogical(state.screenX, state.screenY, &state.x, &state.y);
     return state;
 }
 
@@ -157,6 +285,56 @@ void paintTestScreen(const char* firmwareVersion, const char* ipAddress) {
     g_canvas.drawString("Waiting for daemon integration in a later phase.", 40, h - 58);
 
     g_canvas.fillRect(40, h - 22, w - 80, 4, kLightGray);
+    g_canvas.pushSprite(0, 0);
+}
+
+void paintTouchCalibrationScreen(const char* firmwareVersion) {
+    if (!g_canvasReady) return;
+
+    const int32_t w = g_canvas.width();
+    const int32_t h = g_canvas.height();
+
+    g_canvas.fillSprite(kWhite);
+    g_canvas.drawRect(0, 0, w, h, kBlack);
+
+    g_canvas.setTextDatum(top_center);
+    g_canvas.setFont(&fonts::FreeSansBold18pt7b);
+    g_canvas.setTextColor(kBlack);
+    g_canvas.drawString("PaperS3 Touch Test", w / 2, 24);
+
+    g_canvas.setFont(&fonts::FreeSans9pt7b);
+    char line[96];
+    snprintf(line, sizeof(line), "fw %s  map %s  logical 540x960",
+             firmwareVersion, touchMapName());
+    g_canvas.drawString(line, w / 2, 66);
+
+    int32_t x0 = 0;
+    int32_t y0 = 0;
+    int32_t x1 = 0;
+    int32_t y1 = 0;
+    mapLogicalToScreen(0, 0, &x0, &y0);
+    mapLogicalToScreen(kLogicalFrameWidth - 1, 0, &x1, &y1);
+    g_canvas.drawLine(x0, y0, x1, y1, kMidGray);
+    mapLogicalToScreen(kLogicalFrameWidth - 1, kLogicalFrameHeight - 1, &x0, &y0);
+    g_canvas.drawLine(x1, y1, x0, y0, kMidGray);
+    mapLogicalToScreen(0, kLogicalFrameHeight - 1, &x1, &y1);
+    g_canvas.drawLine(x0, y0, x1, y1, kMidGray);
+    mapLogicalToScreen(0, 0, &x0, &y0);
+    g_canvas.drawLine(x1, y1, x0, y0, kMidGray);
+
+    drawLogicalTarget("TOP LEFT", 0, 0, 24, 28, top_left);
+    drawLogicalTarget("TOP RIGHT", kLogicalFrameWidth - 1, 0,
+                      kLogicalFrameWidth - 25, 28, top_right);
+    drawLogicalTarget("CENTER", kLogicalFrameWidth / 2, kLogicalFrameHeight / 2,
+                      kLogicalFrameWidth / 2, kLogicalFrameHeight / 2 + 32,
+                      top_center);
+    drawLogicalTarget("BOTTOM LEFT", 0, kLogicalFrameHeight - 1,
+                      24, kLogicalFrameHeight - 28, bottom_left);
+    drawLogicalTarget("BOTTOM RIGHT", kLogicalFrameWidth - 1,
+                      kLogicalFrameHeight - 1,
+                      kLogicalFrameWidth - 25, kLogicalFrameHeight - 28,
+                      bottom_right);
+
     g_canvas.pushSprite(0, 0);
 }
 
