@@ -247,6 +247,7 @@ def paint_ai_status(d, rect, data, stale=False):
     session = data.get("session_name", "")
     model = data.get("model", "")
     task = data.get("task", "")
+    usage = data.get("usage") or {}
     ctx = data.get("context") or {}
     used = ctx.get("used")
     limit = ctx.get("limit")
@@ -260,6 +261,19 @@ def paint_ai_status(d, rect, data, stale=False):
     if task:
         task_t = _truncate(d, task, font(22), cw)
         d.text((cx, cy + 44), task_t, fill=COL["ink"], font=font(22))
+
+    usage_lines = [
+        ("5h", usage.get("five_hour_remaining")),
+        ("weekly", usage.get("weekly_remaining")),
+        ("reset", usage.get("reset_hint")),
+    ]
+    usage_lines = [(label, value) for label, value in usage_lines if value]
+    if usage_lines:
+        line_y = cy + ch - 82
+        for label, value in usage_lines[:3]:
+            d.text((cx, line_y), f"{label}: {value}", fill=COL["ink"], font=font(20))
+            line_y += 26
+        return
 
     # Context bar
     if used and limit:

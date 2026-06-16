@@ -370,6 +370,26 @@ def paint_ai_status(d, rect, data, stale=False):
         next_y = wrapped_text(d, x + PADDING, next_y, w - 2 * PADDING, BODY_SIZE * 2 + 16, task)
         next_y += 8
 
+    usage = data.get("usage") or {}
+    usage_lines = [
+        ("5h", usage.get("five_hour_remaining")),
+        ("weekly", usage.get("weekly_remaining")),
+        ("reset", usage.get("reset_hint")),
+    ]
+    usage_lines = [(label, value) for label, value in usage_lines if value]
+    if usage_lines:
+        for label, value in usage_lines[:3]:
+            next_y = body_text(
+                d,
+                x + PADDING,
+                next_y,
+                w - 2 * PADDING,
+                f"{label}: {value}",
+                bold=(label in ("5h", "weekly")),
+            )
+            next_y += 2
+        return
+
     ctx = data.get("context") or {}
     if ctx.get("limit"):
         used, lim = ctx.get("used", 0), ctx["limit"]

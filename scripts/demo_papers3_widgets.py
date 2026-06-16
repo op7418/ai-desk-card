@@ -98,9 +98,12 @@ def _sample_payload(widget: str, slot: str, now_iso: str) -> dict:
             "type": "ai-status",
             "data": {
                 "session_name": "PaperS3",
-                "model": "Codex",
-                "task": "Phase 5 real widget pipeline",
-                "context": {"used": 52000, "limit": 200000},
+                "model": "GPT-5 Codex",
+                "task": "PaperS3 dashboard demo",
+                "usage": {
+                    "five_hour_remaining": "3h 20m",
+                    "weekly_remaining": "72%",
+                },
                 "elapsed_seconds": 900,
                 "last_message_preview": "Rendering real daemon widgets to PaperS3.",
             },

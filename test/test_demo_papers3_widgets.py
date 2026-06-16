@@ -36,6 +36,11 @@ class DemoPaperS3WidgetsTest(unittest.TestCase):
         self.assertEqual([p["slot"] for p in payloads], [
             "top-left", "top-right", "middle", "bottom",
         ])
+        ai_data = payloads[1]["data"]
+        self.assertIn("usage", ai_data)
+        self.assertNotIn("context", ai_data)
+        self.assertEqual(ai_data["usage"]["five_hour_remaining"], "3h 20m")
+        self.assertEqual(ai_data["usage"]["weekly_remaining"], "72%")
 
     def test_status_demo_uses_existing_settings_page(self):
         selection = demo.build_demo_selection("status", now_iso="2026-06-15T12:34:00")

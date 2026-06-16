@@ -394,6 +394,27 @@ Phase 6 real-device acceptance:
   `view=widgets widgets=['weather']`, confirming widget demos return to the
   real widget view rather than remaining on the status page.
 
+Codex usage card follow-up:
+
+- `ai-status` now prefers `data.usage` over the older `data.context` bar.
+  Supported usage fields are `five_hour_remaining`, `weekly_remaining`, and
+  optional `reset_hint`; old `context.used/limit` payloads still render.
+- `scripts/push_codex_ai_status.py` reads real Codex account rate limits via
+  `codex app-server` JSON-RPC (`account/rateLimits/read`) and pushes the
+  right-side `ai-status` card through the existing daemon `/widget` API.
+- Useful command:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\push_codex_ai_status.py
+```
+
+- Verified on hardware/daemon: app-server source returned `model=gpt-5.5`,
+  `5h=64% left`, `weekly=48% left`; daemon accepted the widget with
+  `push_scheduled=true`; `/frame-status` reported `paper-s3`, `raw-serial`,
+  `259200B`, `result=ok`, `selected_widgets=['weather','calendar','todo','ai-status']`.
+- This follow-up did not change firmware, serial frame transfer, touch mapping,
+  or daemon public widget/frame API.
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.
