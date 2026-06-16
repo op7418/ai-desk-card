@@ -146,8 +146,10 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
 
 # 另开一个 PowerShell，推 demo widget
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
@@ -166,6 +168,8 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 - `GET http://127.0.0.1:9877/frame-status` 的输出
 
 PaperS3 当前限制：BLE 暂不支持，deep sleep 暂不支持，battery policy 暂不支持。需要外部数据的 widget 可以继续用 mock/sample demo 验收。
+
+烧录或重启后，PaperS3 短暂显示触摸校准/测试圆圈页是正常的；daemon 推送第一张真实卡片后会覆盖它。首次安装完成建议首推 `dashboard`，再按需要测试 `status` / `text` / mock widget。
 
 ## 安装
 

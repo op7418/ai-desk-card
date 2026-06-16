@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_demo = sub.add_parser("demo", help="Push a demo widget through the daemon.")
     add_profile(p_demo)
-    p_demo.add_argument("--widget", default="status", choices=(
+    p_demo.add_argument("--widget", default="dashboard", choices=(
         "text", "status", "weather-mock", "calendar-mock",
         "todo-mock", "ai-status", "dashboard",
     ))

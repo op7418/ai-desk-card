@@ -77,8 +77,13 @@ Use USB serial for daemon/widget verification:
 
 ```powershell
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 ```
+
+The first successful post-install push should be `dashboard`, not `text`.
+The firmware's touch calibration/test screen is normal immediately after
+flashing or rebooting; it should be replaced once the daemon pushes the
+dashboard frame.
 
 Total ~60 seconds the second time; the first run downloads toolchains.
 Echo each command's outcome to the user.

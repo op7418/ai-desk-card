@@ -121,9 +121,13 @@ For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 .\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
 ```
+
+The PaperS3 firmware may show its touch calibration/test screen after
+flashing or rebooting. That is normal until the daemon pushes the first
+real frame. For first setup, push `dashboard` as the first real widget card.
 
 Otherwise (default) use the **V1.1 path** through the routing table below.
 

@@ -40,6 +40,26 @@ class CardCliTest(unittest.TestCase):
             "--port", "COM3",
         ])
 
+    def test_demo_command_defaults_to_dashboard_for_first_push(self):
+        import card_cli
+
+        captured = []
+        old_run_or_print = card_cli._run_or_print
+
+        def fake_run_or_print(cmd, dry_run):
+            captured.append((cmd, dry_run))
+            return 0
+
+        card_cli._run_or_print = fake_run_or_print
+        try:
+            result = card_cli.main(["demo", "--profile", "paper-s3", "--dry-run"])
+        finally:
+            card_cli._run_or_print = old_run_or_print
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured[0][0][-1], "dashboard")
+        self.assertTrue(captured[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

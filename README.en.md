@@ -153,8 +153,10 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
 
 # In another PowerShell window:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
@@ -173,6 +175,11 @@ For failures, copy daemon lines containing `[widget]`, `[render]`,
 PaperS3 limits today: BLE is not supported, deep sleep is not supported,
 and battery policy is not supported. Widgets that need external APIs can
 still be validated with mock/sample demos.
+
+After flashing or rebooting, PaperS3 may briefly show its touch
+calibration/test circle screen. That is normal until the daemon pushes the
+first real frame. First setup should push `dashboard` first, then use
+`status`, `text`, or mock widgets for follow-up checks.
 
 ## Install
 

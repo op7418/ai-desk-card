@@ -348,6 +348,7 @@ Useful Phase 6 PaperS3 commands:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
@@ -363,6 +364,12 @@ Phase 6 real-device acceptance:
 
 - User ran daemon:
   `.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3`.
+- PaperS3 showing its touch calibration/test circle page immediately after
+  flashing or rebooting is expected; it is the firmware startup test frame
+  and should be replaced after the daemon pushes the first real frame.
+- For first setup, push `dashboard` first so the initial card matches the
+  original M5Paper V1.1 complete-use demo expectation; use `status` and
+  `text` as follow-up checks.
 - Daemon opened `COM3`, loaded cached widgets, received PaperS3 status:
   `device=M5Stack PaperS3`, `fw=0.10.7-paper-s3-frame`,
   `battery_pct=90`, `on_usb=true`, `charging=true`,
