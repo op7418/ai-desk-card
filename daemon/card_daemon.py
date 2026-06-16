@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import base64
 import binascii
+import copy
 import glob
 import json
 import os
@@ -103,6 +104,20 @@ UI_STATES = (
 UI_STATE = "BOOTING"
 UI_LAST_ERROR = ""
 UI_STATE_LOCK = threading.Lock()
+FRAME_STATUS_LOCK = threading.Lock()
+FRAME_STATUS = {
+    "render_id": 0,
+    "in_progress": False,
+    "selected_profile": "m5paper-v1.1",
+    "selected_view": "widgets",
+    "selected_widgets": [],
+    "output": None,
+    "transfer": {"method": None, "target": None, "bytes": 0},
+    "result": "idle",
+    "error": "",
+    "started_at": None,
+    "ended_at": None,
+}
 WIDGET_SLOTS = ("top-left", "top-right", "middle", "bottom", "full")
 WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
                 "ai-status", "ai-tasks",
@@ -150,10 +165,25 @@ class Transport:
     def connected(self) -> bool: raise NotImplementedError
 
 
+def _open_serial_no_reset(port: str, baud: int):
+    import serial
+
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = baud
+    ser.timeout = 0.2
+    ser.write_timeout = 5
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    ser.dtr = False
+    ser.rts = False
+    return ser
+
+
 class SerialTransport(Transport):
     def __init__(self, port):
-        import serial
-        self.ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        self.ser = _open_serial_no_reset(port, SERIAL_BAUD)
         self._lock = threading.Lock()
         time.sleep(0.2)
         log(f"[serial] opened {port} @ {SERIAL_BAUD} baud")
@@ -581,6 +611,10 @@ def _paper_s3_raw_frame_supported() -> bool:
     return PAPER_S3_RAW_FW_TOKEN in fw
 
 
+def _selected_profile_label() -> str:
+    return "paper-s3" if _paper_s3_raw_frame_supported() else "m5paper-v1.1"
+
+
 def _frame_raw_begin_command(fid: int, byte_count: int, crc: int) -> dict:
     return {
         "cmd": "frame_raw_begin",
@@ -957,6 +991,114 @@ def _settings_state() -> dict:
     return state
 
 
+def _widget_type_names(snapshot: list) -> list:
+    names = []
+    for w in snapshot:
+        name = str(w.get("type") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _transfer_target_label() -> str:
+    if TRANSPORT is None:
+        return "none"
+    if isinstance(TRANSPORT, SerialTransport):
+        return "serial"
+    if isinstance(TRANSPORT, WiFiTransport):
+        return "wifi"
+    if isinstance(TRANSPORT, BLETransport):
+        return "ble"
+    return type(TRANSPORT).__name__
+
+
+def _transfer_method_label(region: "tuple | None" = None) -> str:
+    if isinstance(TRANSPORT, WiFiTransport):
+        return "http"
+    if isinstance(TRANSPORT, SerialTransport):
+        if region is None and _paper_s3_raw_frame_supported():
+            return "raw-serial"
+        return "chunked-serial"
+    if isinstance(TRANSPORT, BLETransport):
+        return "ble-wifi-burst" if DEVICE_TELEMETRY.get("wifi_ip") else "chunked-ble"
+    return "unknown"
+
+
+def _reset_frame_status_for_test():
+    with FRAME_STATUS_LOCK:
+        FRAME_STATUS.clear()
+        FRAME_STATUS.update({
+            "render_id": 0,
+            "in_progress": False,
+            "selected_profile": _selected_profile_label(),
+            "selected_view": "widgets",
+            "selected_widgets": [],
+            "output": None,
+            "transfer": {"method": None, "target": None, "bytes": 0},
+            "result": "idle",
+            "error": "",
+            "started_at": None,
+            "ended_at": None,
+        })
+
+
+def _begin_frame_status(selected_view: str, selected_widgets: list) -> int:
+    started = datetime.now().isoformat(timespec="seconds")
+    with FRAME_STATUS_LOCK:
+        render_id = int(FRAME_STATUS.get("render_id") or 0) + 1
+        FRAME_STATUS.clear()
+        FRAME_STATUS.update({
+            "render_id": render_id,
+            "in_progress": True,
+            "selected_profile": _selected_profile_label(),
+            "selected_view": selected_view,
+            "selected_widgets": list(selected_widgets),
+            "output": None,
+            "transfer": {
+                "method": None,
+                "target": _transfer_target_label(),
+                "bytes": 0,
+            },
+            "result": "rendering",
+            "error": "",
+            "started_at": started,
+            "ended_at": None,
+        })
+        return render_id
+
+
+def _finish_frame_status(result: str, *, error: str = "",
+                         output: "dict | None" = None,
+                         transfer: "dict | None" = None):
+    ended = datetime.now().isoformat(timespec="seconds")
+    with FRAME_STATUS_LOCK:
+        if output is not None:
+            FRAME_STATUS["output"] = output
+        if transfer is not None:
+            FRAME_STATUS["transfer"] = transfer
+        FRAME_STATUS["result"] = result
+        FRAME_STATUS["error"] = error
+        FRAME_STATUS["in_progress"] = False
+        FRAME_STATUS["ended_at"] = ended
+
+
+def _frame_status_snapshot() -> dict:
+    with FRAME_STATUS_LOCK:
+        status = copy.deepcopy(FRAME_STATUS)
+    status["ui_state"] = UI_STATE
+    status["last_error"] = UI_LAST_ERROR
+    status["last_frame_time"] = (
+        datetime.fromtimestamp(_FRAME_LAST_PUSH).isoformat(timespec="seconds")
+        if _FRAME_LAST_PUSH > 0 else None
+    )
+    status["last_frame_age_s"] = (
+        int(time.time() - _FRAME_LAST_PUSH) if _FRAME_LAST_PUSH > 0 else None
+    )
+    status["transport_connected"] = TRANSPORT is not None and TRANSPORT.connected()
+    status["active_transport"] = _active_transport_label()
+    return status
+
+
 # v0.7 dirty-region diff: remember the last frame we pushed so the next
 # push can compute a bounding box of changed pixels and ship only that.
 # Skips entirely if nothing changed. Full-frame fallback when the diff
@@ -1063,15 +1205,23 @@ def render_and_push():
     page renderer when IN_SETTINGS is set. Uses dirty-region diff so the
     typical "one widget changed" path only ships the changed rectangle."""
     global _FRAME_LAST_PUSH, VIEW_HOT_ZONES, _LAST_FRAME_IMG
+    selected_view = "status" if IN_SETTINGS else "widgets"
+    snapshot = _widget_snapshot()
+    selected_widgets = _widget_type_names(snapshot)
+    render_id = _begin_frame_status(selected_view, selected_widgets)
     _transition_ui_state("RECEIVING_FRAME", "render_and_push")
     log("[frame] refresh request start reason=render_and_push")
+    log(f"[render] start id={render_id} profile={_selected_profile_label()} "
+        f"view={selected_view} widgets={','.join(selected_widgets) or 'empty'}")
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render
         import importlib
         importlib.reload(card_render)
     except Exception as e:
-        _set_ui_error(f"render import failed: {e!r}")
+        err = f"render import failed: {e!r}"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err)
         return
     try:
         if IN_SETTINGS:
@@ -1080,24 +1230,39 @@ def render_and_push():
             img = card_render_settings.render_settings_page(_settings_state())
             VIEW_HOT_ZONES = card_render_settings.get_hot_zones()
         else:
-            img = card_render.render_image(_widget_snapshot(),
-                                           status=_bar_status())
+            img = card_render.render_image(snapshot, status=_bar_status())
             # Widget view: only the bottom-bar chips (睡眠 / 设置) are
             # tappable. The renderer populates LAST_BOTTOM_BAR_HOT_ZONES
             # during paint_bottom_bar — copy out here.
             VIEW_HOT_ZONES = card_render.get_bottom_bar_hot_zones()
     except Exception as e:
-        _set_ui_error(f"render failed: {e!r}")
+        err = f"render failed: {e!r}"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err)
         return
+
+    output = {"width": img.size[0], "height": img.size[1], "format": "4bpp"}
+    log(f"[render] end id={render_id} output={img.size[0]}x{img.size[1]} format=4bpp")
 
     if isinstance(TRANSPORT, SerialTransport) and _paper_s3_raw_frame_supported():
         packed = card_render.to_4bpp_packed(img)
         _LAST_FRAME_IMG = img.copy()
         _persist_last_frame(_LAST_FRAME_IMG)
+        transfer = {
+            "method": _transfer_method_label(None),
+            "target": _transfer_target_label(),
+            "bytes": len(packed),
+        }
         log(f"[diff] paper-s3 raw serial -> full frame {len(packed)}B")
+        log(f"[transfer] start id={render_id} method={transfer['method']} "
+            f"target={transfer['target']} bytes={transfer['bytes']}")
         ok = push_frame_bytes(packed, region=None)
+        log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
         if not ok:
-            _set_ui_error("paper-s3 raw serial frame push failed")
+            err = "paper-s3 raw serial frame push failed"
+            _set_ui_error(err)
+            _finish_frame_status("failed", error=err,
+                                 output=output, transfer=transfer)
             log("[frame] refresh request end result=failed")
             return
         # PaperS3's raw serial frame stream monopolizes the device parser
@@ -1107,6 +1272,7 @@ def render_and_push():
         _FRAME_LAST_PUSH = time.time()
         _clear_ui_error("frame push succeeded")
         _transition_ui_state(_resting_ui_state(), "frame push complete")
+        _finish_frame_status("ok", output=output, transfer=transfer)
         log("[frame] refresh request end result=ok")
         return
 
@@ -1120,16 +1286,33 @@ def render_and_push():
     if kind == "noop":
         log("[render] no pixel change — skipping push")
         _transition_ui_state(_resting_ui_state(), "frame noop")
+        _finish_frame_status("noop", output=output, transfer={
+            "method": "none",
+            "target": _transfer_target_label(),
+            "bytes": 0,
+        })
         log("[frame] refresh request end result=noop")
         return
+    transfer = {
+        "method": _transfer_method_label(region),
+        "target": _transfer_target_label(),
+        "bytes": len(packed),
+    }
+    log(f"[transfer] start id={render_id} method={transfer['method']} "
+        f"target={transfer['target']} bytes={transfer['bytes']}")
     ok = push_frame_bytes(packed, region=region)
+    log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
     if not ok:
-        _set_ui_error("frame push failed")
+        err = "frame push failed"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err,
+                             output=output, transfer=transfer)
         log("[frame] refresh request end result=failed")
         return
     _FRAME_LAST_PUSH = time.time()
     _clear_ui_error("frame push succeeded")
     _transition_ui_state(_resting_ui_state(), "frame push complete")
+    _finish_frame_status("ok", output=output, transfer=transfer)
     log("[frame] refresh request end result=ok")
 
 
@@ -1243,6 +1426,8 @@ class CardHandler(BaseHTTPRequestHandler):
                 "connected": TRANSPORT is not None and TRANSPORT.connected(),
                 "transport": type(TRANSPORT).__name__ if TRANSPORT else None,
             })
+        if path == "/frame-status":
+            return self._reply(200, _frame_status_snapshot())
         if path == "/version":
             return self._reply(200, {"daemon": "ai-desk-card/0.5"})
         if path == "/heartbeat":
@@ -1491,9 +1676,21 @@ def _internal_dispatch(action: str) -> dict:
         return _action_result(
             action, True, state=_resting_ui_state(), frame_request="scheduled"
         )
-    if action in ("refresh", "reload", "retry"):
-        if action == "retry":
-            _clear_ui_error("retry action")
+    if action in ("refresh", "reload"):
+        with VIEW_LOCK:
+            IN_SETTINGS = False
+        _transition_ui_state(_resting_ui_state(), f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state=_resting_ui_state(), frame_request="scheduled"
+        )
+    if action == "retry":
+        if not UI_LAST_ERROR:
+            log("[action] retry no error / nothing to retry")
+            return _action_result(
+                action, True, "no-error", frame_request="none"
+            )
+        _clear_ui_error("retry action")
         schedule_push(reason=f"action:{action}")
         return _action_result(action, True, frame_request="scheduled")
     if action == "sleep":
@@ -1656,8 +1853,7 @@ def _start_side_serial_reader(port: str):
     Wi-Fi, so we just need to listen on one of them. Lower-risk than
     exposing /status_report on 0.0.0.0."""
     try:
-        import serial
-        ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        ser = _open_serial_no_reset(port, SERIAL_BAUD)
         time.sleep(0.2)
     except Exception as e:
         log(f"[side-serial] open {port} failed: {e!r}")

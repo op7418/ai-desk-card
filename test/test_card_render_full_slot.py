@@ -21,6 +21,27 @@ class CardRenderFullSlotTest(unittest.TestCase):
 
         self.assertEqual(img.getpixel((270, 20)), 255)
 
+    def test_scratch_title_is_rendered_as_text_card_heading(self):
+        untitled = card_render.render_image([
+            {
+                "slot": "full",
+                "type": "scratch",
+                "data": {"text": "Line one\nLine two"},
+            }
+        ], status={})
+        titled = card_render.render_image([
+            {
+                "slot": "full",
+                "type": "scratch",
+                "data": {"title": "Desk Note", "text": "Line one\nLine two"},
+            }
+        ], status={})
+
+        self.assertNotEqual(
+            untitled.crop((16, 16, 260, 72)).tobytes(),
+            titled.crop((16, 16, 260, 72)).tobytes(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import sys
 import json
 import tempfile
 import time
+import types
 import unittest
 
 
@@ -59,12 +60,17 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.old_ui_state = card_daemon.UI_STATE
         self.old_ui_last_error = card_daemon.UI_LAST_ERROR
         self.old_frame_last_push = card_daemon._FRAME_LAST_PUSH
+        self.old_widget_cache = dict(card_daemon.WIDGET_CACHE)
+        self.old_frame_status = dict(card_daemon.FRAME_STATUS)
         card_daemon.DEVICE_TELEMETRY.clear()
+        with card_daemon.WIDGET_LOCK:
+            card_daemon.WIDGET_CACHE.clear()
         card_daemon._FRAME_ID = 0
         card_daemon._FRAME_LAST_PUSH = 0.0
         card_daemon.IN_SETTINGS = False
         card_daemon.UI_STATE = "BOOTING"
         card_daemon.UI_LAST_ERROR = ""
+        card_daemon._reset_frame_status_for_test()
         with card_daemon._RX_LISTENERS_LOCK:
             card_daemon._RX_LISTENERS.clear()
 
@@ -78,6 +84,11 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         card_daemon.UI_STATE = self.old_ui_state
         card_daemon.UI_LAST_ERROR = self.old_ui_last_error
         card_daemon._FRAME_LAST_PUSH = self.old_frame_last_push
+        with card_daemon.WIDGET_LOCK:
+            card_daemon.WIDGET_CACHE.clear()
+            card_daemon.WIDGET_CACHE.update(self.old_widget_cache)
+        card_daemon.FRAME_STATUS.clear()
+        card_daemon.FRAME_STATUS.update(self.old_frame_status)
         card_daemon.VIEW_HOT_ZONES = []
         card_daemon._FRAME_DIRTY.clear()
         with card_daemon._RX_LISTENERS_LOCK:
@@ -109,6 +120,37 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.assertEqual(cmd["bpp"], 4)
         self.assertEqual(cmd["bytes"], 259200)
         self.assertEqual(cmd["crc"], 0xDEC1FC92)
+
+    def test_daemon_opens_serial_without_toggling_reset_lines(self):
+        opened = []
+
+        class FakeSerial:
+            def __init__(self):
+                self.port = None
+                self.baudrate = None
+                self.timeout = None
+                self.write_timeout = None
+                self.dtr = True
+                self.rts = True
+
+            def open(self):
+                opened.append((self.dtr, self.rts))
+
+        old_serial = sys.modules.get("serial")
+        sys.modules["serial"] = types.SimpleNamespace(Serial=FakeSerial)
+        try:
+            ser = card_daemon._open_serial_no_reset("COM3", 115200)
+        finally:
+            if old_serial is None:
+                sys.modules.pop("serial", None)
+            else:
+                sys.modules["serial"] = old_serial
+
+        self.assertEqual(opened, [(False, False)])
+        self.assertEqual(ser.port, "COM3")
+        self.assertEqual(ser.baudrate, 115200)
+        self.assertFalse(ser.dtr)
+        self.assertFalse(ser.rts)
 
     def test_daemon_cache_paths_use_existing_temp_directory(self):
         widget_path = card_daemon._daemon_cache_path("widget_cache.json")
@@ -213,7 +255,19 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.assertFalse(card_daemon.IN_SETTINGS)
         self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
 
-    def test_retry_action_schedules_refresh(self):
+    def test_retry_action_without_error_does_not_schedule_refresh(self):
+        card_daemon._FRAME_DIRTY.clear()
+
+        result = card_daemon._internal_dispatch("retry")
+
+        self.assertEqual(result["action"], "retry")
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["reason"], "no-error")
+        self.assertEqual(result["frame_request"], "none")
+        self.assertFalse(card_daemon._FRAME_DIRTY.is_set())
+
+    def test_retry_action_with_error_schedules_refresh(self):
+        card_daemon.UI_LAST_ERROR = "paper-s3 raw serial frame push failed"
         card_daemon._FRAME_DIRTY.clear()
 
         result = card_daemon._internal_dispatch("retry")
@@ -221,6 +275,18 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.assertEqual(result["action"], "retry")
         self.assertTrue(result["accepted"])
         self.assertEqual(result["frame_request"], "scheduled")
+        self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
+        self.assertEqual(card_daemon.UI_LAST_ERROR, "")
+
+    def test_refresh_action_returns_to_widget_view_before_render(self):
+        card_daemon.IN_SETTINGS = True
+        card_daemon._FRAME_DIRTY.clear()
+
+        result = card_daemon._internal_dispatch("refresh")
+
+        self.assertEqual(result["action"], "refresh")
+        self.assertTrue(result["accepted"])
+        self.assertFalse(card_daemon.IN_SETTINGS)
         self.assertTrue(card_daemon._FRAME_DIRTY.is_set())
 
     def test_touch_action_ignored_while_frame_push_busy(self):
@@ -257,6 +323,43 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             "BOOTING", "READY", "RECEIVING_FRAME", "DISPLAYING_FRAME",
             "ERROR", "STATUS",
         })
+
+    def test_render_and_push_records_real_widget_frame_status(self):
+        fake = FakeRawSerialTransport()
+        card_daemon.TRANSPORT = fake
+        card_daemon.DEVICE_TELEMETRY.update({
+            "device": "M5Stack PaperS3",
+            "firmware": "0.10.7-paper-s3-frame",
+            "frame_state": "ready",
+        })
+        card_daemon.SERIAL_RAW_WRITE_SIZE = card_daemon.FRAME_BYTES
+        card_daemon.SERIAL_RAW_WRITE_DELAY_S = 0.0
+        card_daemon.SERIAL_RAW_BEGIN_TIMEOUT_S = 0.2
+        card_daemon.SERIAL_RAW_END_TIMEOUT_S = 0.2
+        with card_daemon.WIDGET_LOCK:
+            card_daemon.WIDGET_CACHE["full"] = {
+                "type": "scratch",
+                "data": {"title": "Desk Note", "text": "Real widget frame"},
+                "theme": "",
+                "ttl": 0,
+                "stale_after": 0,
+                "written_at": time.time(),
+            }
+
+        card_daemon.render_and_push()
+
+        status = card_daemon._frame_status_snapshot()
+        self.assertEqual(status["selected_profile"], "paper-s3")
+        self.assertEqual(status["selected_view"], "widgets")
+        self.assertEqual(status["selected_widgets"], ["scratch"])
+        self.assertEqual(status["output"], {
+            "width": 540,
+            "height": 960,
+            "format": "4bpp",
+        })
+        self.assertEqual(status["transfer"]["method"], "raw-serial")
+        self.assertEqual(status["transfer"]["bytes"], card_daemon.FRAME_BYTES)
+        self.assertEqual(status["result"], "ok")
 
 
 if __name__ == "__main__":

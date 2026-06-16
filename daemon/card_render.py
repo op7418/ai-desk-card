@@ -437,10 +437,11 @@ def paint_ai_tasks(d, rect, data, stale=False):
 
 def paint_scratch(d, rect, data, stale=False):
     x, y, w, h = rect
+    title = data.get("title") or "NOTE"
     source = data.get("source") or ""
     age = data.get("age") or ""
     meta = f"{source} · {age}".strip(" ·") if source or age else ""
-    next_y = header_bar(d, rect, "NOTE", meta)
+    next_y = header_bar(d, rect, title, meta)
     next_y += PADDING
     text = data.get("text") or ""
     body_h = h - (next_y - y) - PADDING

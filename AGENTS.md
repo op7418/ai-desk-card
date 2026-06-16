@@ -218,6 +218,80 @@ Phase 5 starting boundary:
 - Preserve the stable PaperS3 raw full-frame push and touch coordinate mapping.
 - Keep original M5Paper V1.1 profile behavior intact.
 
+Phase 5 completed:
+
+- PaperS3 still uses the existing daemon/widget/frame rendering architecture:
+  `POST /widget` updates `WIDGET_CACHE`, `render_and_push()` renders a
+  `540x960` Pillow frame, and PaperS3 raw serial receives a full `259200B`
+  4bpp frame.
+- Daemon logs now include widget types, render start/end, output size/format,
+  transfer method/target/bytes, and result/error.
+- `GET /frame-status` exposes the latest render/transfer status for demo
+  scripts and debugging.
+- `scratch` can now carry an optional `title`; this is the Phase 5 text card.
+- `refresh` / `reload` exits the status page before scheduling a real widget
+  re-render. `retry` only schedules a retry when there is an existing error;
+  otherwise it logs `no error / nothing to retry`.
+- `scripts/demo_papers3_widgets.py` pushes Phase 5 demo cards through the
+  daemon and waits for `/frame-status`.
+- Phase 5 demo widgets supported by the script:
+  `text`, `status`, `weather-mock`, `calendar-mock`, `todo-mock`,
+  `ai-status`, and `dashboard`.
+- `text` and `status` exercise real renderer/daemon status paths.
+  `weather-mock`, `calendar-mock`, `todo-mock`, and `ai-status` use
+  sample/mock data so Phase 5 does not require external API keys or auth.
+- Daemon serial opens now hold DTR/RTS low via `_open_serial_no_reset()` for
+  both the main serial transport and side serial reader. This reduces
+  USB-CDC reset/reboot behavior where restarting the daemon can repaint the
+  PaperS3 startup touch-test page.
+- If the daemon is stopped, PaperS3 touch actions cannot refresh real content.
+  The e-ink panel should retain the last frame unless the device resets; if it
+  returns to the startup touch-test page, collect boot logs plus daemon
+  `[transfer]` / `[frame]` lines.
+
+Useful Phase 5 Windows PowerShell commands:
+
+```powershell
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --transport serial --port COM3
+
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget calendar-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget todo-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget ai-status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+```
+
+For failures, collect daemon lines containing `[widget]`, `[render]`,
+`[transfer]`, `[frame]`, and `[action]`, plus PaperS3 serial lines containing
+`[rx]`, `[frame]`, `[display]`, and `[touch]`.
+
+Phase 5 handoff verification:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py scripts\demo_papers3_widgets.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
+Phase 6 starting boundary:
+
+- Start from the committed Phase 5 handoff. Read `AGENTS.md` and the latest
+  commit before coding.
+- Keep the PaperS3 raw full-frame push, portrait `540x960` logical coordinate
+  system, and touch mapping stable unless the new Phase 6 goal explicitly
+  reopens them.
+- Do not introduce BLE, deep sleep, battery strategy, or power optimization
+  unless the user explicitly makes that Phase 6 scope.
+- Keep original M5Paper V1.1 profile (`card`) buildable.
+- Likely next useful checks: real daily-use daemon lifecycle, recoverability
+  after daemon/device reconnect, and any user-specified widget/content gaps.
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.
