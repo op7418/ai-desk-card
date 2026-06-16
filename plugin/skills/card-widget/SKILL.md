@@ -229,7 +229,7 @@ Health nudge. Last-break + sitting + eye-rest.
 ### AI monitoring
 
 #### `ai-status` — _narrow OK_
-Model + task + Codex 5h / weekly remaining usage when known. Push at the start
+Model + task + AI 5h / weekly remaining usage when known. Push at the start
 of any non-trivial task. Prefer `usage` over the older `context` bar.
 ```json
 {"session_name":"refactor auth","model":"GPT-5 Codex","task":"writing tests",
@@ -250,6 +250,20 @@ Get-Content $env:USERPROFILE\.codex\ai-desk-card-status.txt -Raw |
 The helper also accepts explicit `CODEX_MODEL`, `CODEX_5H_REMAINING`,
 `CODEX_WEEKLY_REMAINING`, or `%USERPROFILE%\.codex\ai-desk-card-usage.json`.
 Do not read Codex auth tokens or private ChatGPT endpoints for this.
+
+If the user asks to show Claude Code account usage, use Claude Code's
+statusline data. Configure Claude Code `statusLine` to run:
+```powershell
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe E:\dev\ai-desk-card\scripts\claude_statusline_sink.py
+```
+After Claude Code has produced at least one assistant response, push the card:
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\push_claude_ai_status.py
+```
+The sink writes only `%USERPROFILE%\.claude\ai-desk-card-usage.json` with
+model, 5h remaining, weekly remaining, and reset hints. Do not read Claude
+auth tokens. `rate_limits` appears only for Claude.ai subscribers after the
+first response in the session.
 
 #### `ai-tasks` — _narrow OK_
 Running / waiting / blocked / done-today counters. Vertical in narrow.

@@ -415,6 +415,35 @@ Codex usage card follow-up:
 - This follow-up did not change firmware, serial frame transfer, touch mapping,
   or daemon public widget/frame API.
 
+Claude Code usage card follow-up:
+
+- Claude Code does not expose quota through `claude auth status`; use its
+  statusline JSON instead. Official statusline input includes
+  `rate_limits.five_hour.used_percentage` and
+  `rate_limits.seven_day.used_percentage` for Claude.ai subscribers after the
+  first assistant response in a session.
+- `scripts/claude_statusline_sink.py` is the statusline command. It reads the
+  JSON from stdin, writes `%USERPROFILE%\.claude\ai-desk-card-usage.json`, and
+  prints a compact Claude statusline. It does not read Claude auth tokens.
+- `scripts/push_claude_ai_status.py` reads that cache and pushes the existing
+  `ai-status` widget through daemon `/widget`.
+- Useful commands:
+
+```powershell
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe E:\dev\ai-desk-card\scripts\claude_statusline_sink.py
+.\.pio-venv\Scripts\python.exe scripts\push_claude_ai_status.py
+```
+
+- To make it automatic, configure Claude Code `statusLine` command to the
+  absolute `claude_statusline_sink.py` invocation above, then interact once in
+  the Claude Code app so it emits fresh statusline JSON.
+- Verified on 2026-06-16 after configuring
+  `%USERPROFILE%\.claude\settings.json`: statusline cache reported
+  `model=Sonnet 4.6`, `5h=100% left`, `weekly=61% left`; pushing
+  `scripts/push_claude_ai_status.py` succeeded, and `/frame-status` reported
+  `paper-s3`, `raw-serial`, `259200B`, `result=ok`,
+  `selected_widgets=['weather','calendar','todo','ai-status']`.
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.
