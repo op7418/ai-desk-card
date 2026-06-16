@@ -1,7 +1,7 @@
 ---
 name: card-widget
 description: |
-  Push live data to the user's ai-desk-card M5Paper e-ink companion display.
+  Push live data to the user's ai-desk-card M5Paper or PaperS3 e-ink companion display.
   Use whenever the user asks to show todos, calendar, weather, AI status,
   inbox counts, next meeting, or any glanceable info on their card / 卡片 /
   副屏 / 墨水屏 / e-ink display. 16 widget types available; AI picks slot
@@ -22,11 +22,15 @@ allowed-tools:
   - Write
 ---
 
-# card-widget — drive the M5Paper 副屏
+# card-widget — drive the M5Paper / PaperS3 副屏
 
 The card is a 540 × 960 e-ink panel sitting next to the user's monitor.
 You push 1-4 widgets and the daemon renders a single frame; transfer
 time depends on the transport.
+
+For M5Stack PaperS3, use `--profile paper-s3` commands. The current stable
+transport is USB serial raw full-frame push; BLE, deep sleep, and battery
+policy are not implemented for PaperS3 yet.
 
 ## Transport & latency (v0.8)
 

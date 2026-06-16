@@ -15,6 +15,11 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import card_profiles
 
 DEFAULT_DAEMON_URL = os.environ.get("CARD_DAEMON_URL", "http://127.0.0.1:9877")
 WIDGET_CHOICES = (
@@ -190,11 +195,38 @@ def _print_frame_summary(status: dict) -> None:
         print(f"[demo] error reason={status.get('error')}")
 
 
+def _resolve_profile(profile_name: str, pair_status: dict, frame_status: dict) -> dict | None:
+    if profile_name != "auto":
+        return card_profiles.get_profile(profile_name)
+    for status in (frame_status, pair_status):
+        if status.get("profile_source") == "default":
+            continue
+        detected = card_profiles.detect_profile_from_status(status)
+        if detected:
+            return card_profiles.get_profile(detected)
+    return None
+
+
+def _ensure_widget_view(daemon_url: str, before: dict,
+                        timeout_s: float, poll_s: float) -> dict:
+    if before.get("selected_view") != "status":
+        return before
+
+    print("[demo] leave status page before posting widget demo")
+    code, body = _request_json("POST", daemon_url, "/back", {})
+    if code < 200 or code >= 300:
+        raise RuntimeError(f"back request failed: {body}")
+    status = _wait_for_frame(daemon_url, before, timeout_s, poll_s)
+    if status.get("result") not in {"ok", "noop"}:
+        raise RuntimeError(f"back request did not complete cleanly: {status}")
+    return status
+
+
 def run(args: argparse.Namespace) -> int:
     daemon_url = args.daemon_url.rstrip("/")
     selection = build_demo_selection(args.widget)
 
-    print(f"[demo] selected profile={args.profile}")
+    print(f"[demo] requested profile={args.profile}")
     print(f"[demo] selected widget={args.widget}")
     print(f"[demo] daemon={daemon_url}")
 
@@ -204,13 +236,32 @@ def run(args: argparse.Namespace) -> int:
         print("[demo] start daemon first, then copy daemon stderr and PaperS3 serial logs if this repeats")
         return 2
     print(f"[demo] daemon connected={pair.get('connected')} transport={pair.get('transport')}")
-    if not pair.get("connected"):
-        print("[demo] no PaperS3 connection through daemon; close serial monitor and start daemon with --transport serial --port COM3")
-        return 2
 
     code, before = _request_json("GET", daemon_url, "/frame-status")
     if code != 200:
         before = {"render_id": 0}
+
+    try:
+        profile = _resolve_profile(args.profile, pair, before)
+    except KeyError as exc:
+        print(f"[demo] profile error: {exc}")
+        return 2
+    if profile is None:
+        print("[demo] could not auto-detect profile; rerun with --profile paper-s3 or --profile m5paper-v1.1")
+        return 2
+
+    print(f"[demo] selected profile={profile['name']} device={profile['device_name']}")
+    print(f"[demo] selected transport={pair.get('transport')} preferred={profile['preferred_transport']}")
+    print(f"[demo] render width={profile['logical_width']} height={profile['logical_height']} "
+          f"format={profile['display_format']}")
+
+    detected = card_profiles.detect_profile_from_status(before) or card_profiles.detect_profile_from_status(pair)
+    if args.profile != "auto" and detected and detected != profile["name"]:
+        print(f"[demo] warning profile mismatch requested={profile['name']} daemon={detected}")
+
+    if not pair.get("connected"):
+        print(f"[demo] no {profile['device_name']} connection through daemon; close serial monitor and start daemon with --profile {profile['name']} --transport serial --port COM3")
+        return 2
 
     if selection["action"] == "status":
         print("[demo] request status/settings page via existing /settings action")
@@ -219,6 +270,11 @@ def run(args: argparse.Namespace) -> int:
             print(f"[demo] status request failed: {body}")
             return 3
     else:
+        try:
+            before = _ensure_widget_view(daemon_url, before, args.timeout, args.poll)
+        except RuntimeError as exc:
+            print(f"[demo] widget view setup failed: {exc}")
+            return 3
         if not args.no_clear:
             print("[demo] clear existing widgets before demo")
             _request_json("DELETE", daemon_url, "/widget")
@@ -244,7 +300,7 @@ def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Push Phase 5 PaperS3 demo widgets through the daemon.")
     parser.add_argument("--daemon-url", default=DEFAULT_DAEMON_URL)
-    parser.add_argument("--profile", default="paper-s3", choices=("paper-s3", "card"))
+    parser.add_argument("--profile", default="paper-s3")
     parser.add_argument("--widget", default="dashboard", choices=WIDGET_CHOICES)
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--poll", type=float, default=0.5)

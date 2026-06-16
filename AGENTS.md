@@ -292,6 +292,101 @@ Phase 6 starting boundary:
 - Likely next useful checks: real daily-use daemon lifecycle, recoverability
   after daemon/device reconnect, and any user-specified widget/content gaps.
 
+Phase 6 completed:
+
+- Added formal device profile config at `config/device_profiles.json` with
+  `m5paper-v1.1` and `paper-s3`.
+- `paper-s3` profile metadata:
+  `device_name=M5Stack PaperS3`, `platformio_env=paper-s3`,
+  logical `540x960`, `display_format=4bpp grayscale`,
+  `preferred_transport=USB serial`, widgets/touch/UI actions enabled, BLE /
+  deep sleep / battery policy disabled.
+- Shared helper `card_profiles.py` normalizes aliases (`card`,
+  `M5Paper V1.1`, `PaperS3`, `M5Stack PaperS3`) and conservatively detects
+  profile from daemon/device status.
+- `daemon/card_daemon.py` accepts `--profile auto|m5paper-v1.1|paper-s3`,
+  keeps default backward-compatible, and adds `selected_profile`,
+  `profile_source`, `device_name`, and `preferred_transport` to status
+  endpoints without changing the public widget/frame API.
+- `scripts/card_cli.py` is the profile-aware Windows-friendly wrapper for
+  build/upload/monitor/daemon/demo.
+- `scripts/diagnose_device.py --profile paper-s3 --port COM3` checks
+  PlatformIO, PlatformIO env, serial ports, daemon status, last frame status,
+  optional build, optional demo send, and prints log patterns to copy.
+- `scripts/demo_papers3_widgets.py --profile paper-s3 --widget ...` now reads
+  the shared profile config and logs selected profile, transport,
+  render size/format, transfer bytes, result/error.
+- Demo widget pushes now leave the status page before posting a widget if the
+  previous demo/action left the daemon in `selected_view=status`; this keeps
+  text/weather/calendar/todo demos rendering as `selected_view=widgets`.
+- `scripts/state.sh` now includes `profile.selected`,
+  `profile.source`, and `profile.device_name`.
+- Updated `SKILL.md`, README docs, install/transport flows, plugin command
+  docs, and card-widget Skill docs with PaperS3 profile rules, Windows 11
+  PowerShell quick start, diagnose path, and current PaperS3 limits.
+- Profile selection rule for agents: explicit M5Paper V1.1 -> `m5paper-v1.1`;
+  explicit PaperS3 / M5Stack PaperS3 / ESP32-S3 Paper -> `paper-s3`; unclear
+  hardware -> ask model or run diagnose after the model is known. Do not
+  default an unclear e-ink device to M5Paper V1.1.
+- Verification run in Phase 6:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py scripts\card_cli.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
+Useful Phase 6 PaperS3 commands:
+
+```powershell
+[System.IO.Ports.SerialPort]::GetPortNames()
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+```
+
+For Phase 6 failures, collect daemon lines containing `[widget]`, `[render]`,
+`[transfer]`, `[frame]`, and `[action]`; PaperS3 serial lines containing
+`[rx]`, `[frame]`, `[display]`, and `[touch]`; and
+`GET http://127.0.0.1:9877/frame-status`.
+
+Phase 6 real-device acceptance:
+
+- User ran daemon:
+  `.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3`.
+- Daemon opened `COM3`, loaded cached widgets, received PaperS3 status:
+  `device=M5Stack PaperS3`, `fw=0.10.7-paper-s3-frame`,
+  `battery_pct=90`, `on_usb=true`, `charging=true`,
+  `frame_state=displayed`.
+- Raw serial frame push completed on hardware:
+  `259200B`, `crc=7fc41079`, `frame_raw_begin` ack,
+  `frame_raw_end` ack, decoded `540x960` `4bpp`, display update
+  `logical=540x960 panel=960x540 map=rotate-cw epd=quality`, update end
+  `ms=662`.
+- Daemon `/frame-status` after the hardware push reported:
+  `selected_profile=paper-s3`, `selected_view=widgets`,
+  `selected_widgets=['ai-status']`, output `540x960 4bpp`,
+  transfer `raw-serial` target `serial` bytes `259200`, `result=ok`,
+  `profile_source=telemetry`, `active_transport=USB`.
+- User verified demo commands on hardware:
+  `status`, `text`, and `weather-mock` all completed with
+  `result=ok`, `profile=paper-s3`, output `540x960 4bpp`, transfer
+  `raw-serial` target `serial` bytes `259200`.
+- After the demo view fix, user reran `weather-mock`; output reported
+  `selected widget=weather-mock`, `selected profile=paper-s3`,
+  `render width=540 height=960 format=4bpp grayscale`, and final
+  `view=widgets widgets=['weather']`, confirming widget demos return to the
+  real widget view rather than remaining on the status page.
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

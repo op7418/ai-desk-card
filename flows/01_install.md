@@ -8,11 +8,15 @@ build + flash + LittleFS upload.
 
 State this to the user, then verify each:
 
-1. **Have an M5Paper V1.1 in front of you?** Other variants (V1.0, S3)
-   may work but aren't tested.
+1. **Identify the device profile.** M5Paper V1.1 uses env `card`.
+   M5Stack PaperS3 uses env `paper-s3`. If the user is unsure, ask the
+   model or run `python scripts/diagnose_device.py --profile paper-s3
+   --skip-build --no-send-test` only after they say it is PaperS3.
 2. **A USB-C *data* cable** (not power-only). Most cables that came in
    the box are fine.
-3. **macOS 10.15+ or Linux** with USB CDC. (Windows via WSL2 untested.)
+3. **M5Paper V1.1:** macOS 10.15+ or Linux with USB CDC. **PaperS3:**
+   Windows 11 PowerShell is supported through native COM ports; do not
+   require VS Code or WSL USB passthrough.
 
 If `hardware.pio_installed == false`:
 
@@ -57,6 +61,23 @@ for the full Color profile):
 ```bash
 pio run -e paper-color
 pio run -e paper-color -t upload   # no uploadfs needed (built-in font)
+```
+
+**M5Stack PaperS3** (Phase 6 profile):
+
+```powershell
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+```
+
+PaperS3 does not use the M5Paper V1.1 BLE/deep-sleep/battery-policy path.
+Use USB serial for daemon/widget verification:
+
+```powershell
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 ```
 
 Total ~60 seconds the second time; the first run downloads toolchains.

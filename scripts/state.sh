@@ -109,6 +109,11 @@ state = {
     "battery_pct":       hb.get("battery_pct"),
     "uptime":            hb.get("uptime"),
   },
+  "profile": {
+    "selected":    hb.get("selected_profile"),
+    "source":      hb.get("profile_source"),
+    "device_name": hb.get("device_name"),
+  },
   "wifi": {
     "provisioned": bool(mdns) or bool(hb.get("wifi_ip")),
     "ip":          hb.get("wifi_ip") or (mdns or {}).get("ip"),

@@ -4,15 +4,16 @@
 ![License](https://img.shields.io/github/license/op7418/ai-desk-card?style=flat-square)
 ![Skill](https://img.shields.io/badge/Skill-Agent-111111?style=flat-square)
 ![M5Paper](https://img.shields.io/badge/M5Paper-V1.1-0A7CFF?style=flat-square)
+![PaperS3](https://img.shields.io/badge/M5Stack-PaperS3-111111?style=flat-square)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Supported-6B5B95?style=flat-square)
 ![Codex](https://img.shields.io/badge/Codex-Supported-222222?style=flat-square)
 
 > 🇨🇳 **中文版（主文档）: [README.md](./README.md)**
 
 A Skill that turns an [M5Paper V1.1](https://docs.m5stack.com/en/core/m5paper)
-e-ink panel into a desk companion driven by an AI agent (Claude Code,
-Codex, Cursor, etc.). The agent decides what to push: weather, calendar,
-todos, PR queue, AI session status, break reminders…
+or M5Stack PaperS3 e-ink panel into a desk companion driven by an AI agent
+(Claude Code, Codex, Cursor, etc.). The agent decides what to push:
+weather, calendar, todos, PR queue, AI session status, break reminders…
 
 **Once you install the Skill, the agent walks you through firmware
 flashing, Wi-Fi provisioning, and daily widget pushes** — you don't run
@@ -127,11 +128,51 @@ Auto-sleep at 11pm and show my business card.
 |------|------|
 | **M5Paper V1.1** | Primary target. ~¥600 / $90. [Official store](https://shop.m5stack.com/products/m5paper-v1-1) / Amazon / AliExpress |
 | M5Paper V1.0 | Likely works, battery threshold (`4150 mV`) may need tuning |
-| M5Paper S3 | Needs porting (1-2 days, BLE stack differs) |
+| **M5Stack PaperS3** | Supported via the `paper-s3` profile: build, upload, USB serial daemon, real widgets/cards, and touch UI actions |
 | USB-C **data cable** | Used once for flashing. Charge-only cables don't work |
 | (optional) USB-C charger | Needed for always-on Wi-Fi mode |
 
 > ⚠️ **You don't need to pre-install PlatformIO / compilers / Python** — if the Skill detects something missing, it lets the agent install it.
+
+## PaperS3 Windows 11 PowerShell Quick Start
+
+PaperS3 currently uses the stable USB serial raw full-frame path. Windows
+11 PowerShell users do not need VS Code or WSL USB passthrough.
+
+```powershell
+cd E:\dev\ai-desk-card
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+
+[System.IO.Ports.SerialPort]::GetPortNames()
+
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+
+# Close the serial monitor before starting the daemon; only one process can own COM3.
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+
+# In another PowerShell window:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget calendar-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget todo-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget ai-status
+
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+```
+
+For failures, copy daemon lines containing `[widget]`, `[render]`,
+`[transfer]`, `[frame]`, and `[action]`; PaperS3 serial lines containing
+`[rx]`, `[frame]`, `[display]`, and `[touch]`; and
+`GET http://127.0.0.1:9877/frame-status`.
+
+PaperS3 limits today: BLE is not supported, deep sleep is not supported,
+and battery policy is not supported. Widgets that need external APIs can
+still be validated with mock/sample demos.
 
 ## Install
 
@@ -341,7 +382,7 @@ AI Agent ──────┐                                  │
 No. After install, just say "set up the card" — the agent probes state, installs PlatformIO (if missing), runs `pio run -t upload`, flashes the CJK font, and tells you what it's doing at each step.
 
 **Q: I don't have M5Paper V1.1 — anything else?**
-M5Paper V1.0 likely works. M5Paper S3 needs porting (BLE stack differs). Inkplate / Waveshare / etc. aren't supported yet — roadmap item.
+M5Paper V1.0 likely works. M5Stack PaperS3 is supported through the `paper-s3` profile with Windows PowerShell + USB serial daemon/widget workflows; BLE, deep sleep, and battery policy are still not implemented. Inkplate / Waveshare / etc. aren't supported yet — roadmap item.
 
 **Q: Do I have to use Claude Code?**
 No. `SKILL.md` is agent-agnostic — any agent that recognizes the format + has shell permission works (Codex / Cursor / Aider / self-built). The `plugin/` slash commands are a Claude Code convenience layer, not the core.
@@ -356,14 +397,14 @@ You skipped the LittleFS font flash. Ask the agent to "run uploadfs again".
 Say "update ai-desk-card and re-flash". The Skill pulls new code + builds + uploads.
 
 **Q: Does it work outside macOS?**
-Daemon should work on Linux (not deeply tested). Windows needs WSL2. PlatformIO is cross-platform.
+Daemon should work on Linux (not deeply tested). The older M5Paper V1.1 flow is still macOS/Linux oriented; the PaperS3 quick start supports native Windows 11 PowerShell COM ports and does not need WSL USB passthrough. PlatformIO is cross-platform.
 
 **Q: Does any data go to the cloud?**
 No. Daemon binds 127.0.0.1 by default (device→daemon status_report goes over LAN). Wi-Fi credentials live in device NVS, never in daemon logs or git.
 
 ## Roadmap
 
-- M5Paper V1.0 / S3 port verification
+- M5Paper V1.0 verification; PaperS3 BLE / deep sleep / battery policy in later phases
 - Inkplate / Waveshare / other e-ink board support
 - Captive portal Wi-Fi provisioning (no daemon needed)
 - Hardware power-button intercept (long-press 2s → render business card before deep sleep)
@@ -378,7 +419,7 @@ Most valuable contributions:
 
 - Hardware photos / videos (helps new users see the form factor)
 - Linux / Windows daemon testing reports
-- M5Paper V1.0 / S3 firmware port verification
+- M5Paper V1.0 firmware verification; PaperS3 BLE / deep sleep / battery-policy reports
 - New widget schemas + renderers
 - Translation / docs improvements
 

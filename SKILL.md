@@ -1,7 +1,8 @@
 ---
 name: ai-desk-card
 description: |
-  Drive a physical e-ink desk card (M5Paper 540×960) sitting next to the
+  Drive a physical e-ink desk card (M5Paper V1.1 or M5Stack PaperS3,
+  logical 540×960) sitting next to the
   user's monitor. Use whenever the user wants to:
     - show / push / display ANYTHING on their card / 卡片 / 副屏 / 墨水屏 /
       e-ink display / desk card / glanceable display / secondary display
@@ -24,6 +25,8 @@ trigger_keywords:
   - 墨水屏
   - e-ink
   - M5Paper
+  - PaperS3
+  - M5Stack PaperS3
   - paper card
   - glanceable display
   - secondary display
@@ -41,7 +44,7 @@ allowed-tools:
 
 A 540×960 e-ink panel sitting next to the user's monitor. AI agents push
 widgets to it; the daemon renders frames server-side and ships pixels over
-Wi-Fi / USB / BLE. This Skill is the **only** thing an agent needs to call
+Wi-Fi / USB / BLE depending on profile. This Skill is the **only** thing an agent needs to call
 — it auto-detects state and routes to the right flow.
 
 ## Step 1 — ALWAYS probe state first
@@ -67,6 +70,9 @@ Output is JSON with this shape:
   "device":     { "alive": bool, "last_seen_seconds": int|null,
                   "active_transport": "Wi-Fi|USB|BLE|null",
                   "battery_pct": int|null, "uptime": str|null },
+  "profile":    { "selected": "m5paper-v1.1|paper-s3|null",
+                  "source": "telemetry|requested|default|null",
+                  "device_name": str|null },
   "wifi":       { "provisioned": bool, "ip": str|null },
   "interests":  { "configured": bool, "path": str|null }
 }
@@ -79,10 +85,22 @@ actually hearing back from the device right now."
 
 ## Step 1.5 — Identify the device profile
 
-The Skill supports two devices with different panels + daemons:
+The Skill supports these device profiles:
 
 - **M5Paper V1.1** (540×960 grayscale, GT911 touch, BLE pair) — original
+- **M5Stack PaperS3** (logical 540×960 grayscale, GT911 touch) — `paper-s3`
+  profile. Current recommended transport is USB serial raw full-frame push.
+  BLE, deep sleep, and battery policy are not implemented for PaperS3 yet.
 - **M5Paper Color** (600×400 Spectra 6 color, 3 physical buttons, audio + SHT40) — new in v0.10
+
+Profile selection rules:
+
+- User says **M5Paper V1.1** or just **M5Paper**: use `m5paper-v1.1`
+  (PlatformIO env `card`) unless hardware evidence says otherwise.
+- User says **PaperS3**, **M5Stack PaperS3**, **M5Paper S3**, or
+  **ESP32-S3 Paper**: use `paper-s3` (PlatformIO env `paper-s3`).
+- User is unsure ("my e-ink display will not connect"): do not assume
+  M5Paper V1.1. Ask the device model or run a profile-aware diagnose command.
 
 If GET `/heartbeat` returns `device_status.device == "M5PaperColor"`
 (via `color_daemon.py` running), use the **Color path** described in
@@ -94,6 +112,18 @@ If GET `/heartbeat` returns `device_status.device == "M5PaperColor"`
 - slot names: `top-left / top-right / bottom-left / bottom-right`
 - extra widgets: `ambient` (SHT40 temp+humid)
 - physical buttons: 顶=sleep / 下左=refresh / 下中=settings
+
+For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
+
+```powershell
+[System.IO.Ports.SerialPort]::GetPortNames()
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+```
 
 Otherwise (default) use the **V1.1 path** through the routing table below.
 
@@ -109,6 +139,7 @@ re-probe.
 | Condition | Next action | Detail flow |
 |---|---|---|
 | `firmware.flashed == false` AND no `device.alive` | First-time hardware setup | [flows/01_install.md](flows/01_install.md) |
+| `daemon.running == false` and profile is `paper-s3` | Start PaperS3 daemon | `python daemon/card_daemon.py --profile paper-s3 --transport serial --port <COM port>` |
 | `daemon.running == false` | Start the daemon | `bash $SKILL_DIR/plugin/scripts/start.sh` |
 | `device.alive == false` AND `transport.connected == false` | Device unreachable — could be asleep, off, BLE not paired. Tell user, suggest physical wake (tap rotary / plug USB) | [flows/02_transport.md](flows/02_transport.md) |
 | `device.alive == false` AND `transport.connected == true` (daemon connected something but no status_report in 90s) | Device transport up but not responding — restart daemon, then probe | [flows/02_transport.md](flows/02_transport.md) |
@@ -147,6 +178,14 @@ JSON
 Full per-widget schema + theme reference:
 [plugin/skills/card-widget/SKILL.md](plugin/skills/card-widget/SKILL.md)
 
+PaperS3 demo hot path:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+```
+
 ## Step 4 — When to suggest scheduled pushes
 
 If the user's request implies recurrence ("keep my calendar updated",
@@ -171,11 +210,15 @@ The Skill provides the *what* (interests + push) — your agent provides the
 - **No font escape hatches.** The CJK TTF doesn't include ▢ ▶ ✎ ♪ ↑ ↓ ● ○
   — … °. Use the safe glyph set documented in
   [plugin/skills/card-widget/SKILL.md](plugin/skills/card-widget/SKILL.md).
-- **Wi-Fi preferred over USB / BLE.** 0.2 s vs 1-32 s vs broken.
+- **M5Paper V1.1:** Wi-Fi preferred over USB / BLE. 0.2 s vs 1–32 s vs broken.
+- **PaperS3:** USB serial is the stable Phase 6 transport. Do not claim
+  BLE, deep sleep, or battery policy support for PaperS3.
 
 ## Hardware: what the user needs
 
 - M5Paper V1.1 (~¥600 / $90) — primary target
+- M5Stack PaperS3 — supported via `paper-s3` for build/upload/USB serial
+  daemon/widget workflows
 - USB-C data cable (one time, for flashing)
 - Optional: USB-C charger for always-on Wi-Fi mode
 

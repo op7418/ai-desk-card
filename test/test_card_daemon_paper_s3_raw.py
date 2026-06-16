@@ -62,6 +62,7 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.old_frame_last_push = card_daemon._FRAME_LAST_PUSH
         self.old_widget_cache = dict(card_daemon.WIDGET_CACHE)
         self.old_frame_status = dict(card_daemon.FRAME_STATUS)
+        self.old_requested_profile = card_daemon.REQUESTED_PROFILE
         card_daemon.DEVICE_TELEMETRY.clear()
         with card_daemon.WIDGET_LOCK:
             card_daemon.WIDGET_CACHE.clear()
@@ -89,6 +90,7 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             card_daemon.WIDGET_CACHE.update(self.old_widget_cache)
         card_daemon.FRAME_STATUS.clear()
         card_daemon.FRAME_STATUS.update(self.old_frame_status)
+        card_daemon.REQUESTED_PROFILE = self.old_requested_profile
         card_daemon.VIEW_HOT_ZONES = []
         card_daemon._FRAME_DIRTY.clear()
         with card_daemon._RX_LISTENERS_LOCK:
@@ -109,6 +111,13 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         card_daemon.DEVICE_TELEMETRY["firmware"] = "0.10.1"
 
         self.assertFalse(card_daemon._paper_s3_raw_frame_supported())
+
+    def test_explicit_daemon_profile_is_reported_before_device_telemetry(self):
+        card_daemon.REQUESTED_PROFILE = "paper-s3"
+        card_daemon.DEVICE_TELEMETRY.clear()
+
+        self.assertEqual(card_daemon._selected_profile_label(), "paper-s3")
+        self.assertEqual(card_daemon._selected_profile()["device_name"], "M5Stack PaperS3")
 
     def test_frame_raw_begin_command_shape(self):
         cmd = card_daemon._frame_raw_begin_command(123, 259200, 0xDEC1FC92)

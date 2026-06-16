@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "default_profile": "m5paper-v1.1",
+  "profiles": {
+    "m5paper-v1.1": {
+      "aliases": ["card", "m5paper", "m5paper-v1.1", "M5Paper V1.1"],
+      "device_name": "M5Paper V1.1",
+      "platformio_env": "card",
+      "logical_width": 540,
+      "logical_height": 960,
+      "display_format": "4bpp grayscale",
+      "preferred_transport": "Wi-Fi",
+      "firmware_tokens": ["ai-desk-card", "m5-paper-buddy"],
+      "supported_features": {
+        "frame_rendering": true,
+        "touch": true,
+        "ui_actions": true,
+        "widgets": true,
+        "ble": true,
+        "deep_sleep": true,
+        "battery_policy": true
+      }
+    },
+    "paper-s3": {
+      "aliases": [
+        "paper-s3",
+        "papers3",
+        "m5paper-s3",
+        "M5Paper S3",
+        "M5Stack PaperS3",
+        "ESP32-S3 Paper"
+      ],
+      "device_name": "M5Stack PaperS3",
+      "platformio_env": "paper-s3",
+      "logical_width": 540,
+      "logical_height": 960,
+      "display_format": "4bpp grayscale",
+      "preferred_transport": "USB serial",
+      "firmware_tokens": ["paper-s3-frame"],
+      "supported_features": {
+        "frame_rendering": true,
+        "touch": true,
+        "ui_actions": true,
+        "widgets": true,
+        "ble": false,
+        "deep_sleep": false,
+        "battery_policy": false
+      }
+    }
+  }
+}

@@ -38,11 +38,19 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+import card_profiles
+
 # v0.6 server-side rendering. Device receives 540×960 4bpp pixel frames
 # rather than widget_set JSON. We bump baud accordingly. Push debounce on
 # top of M5EPD's ~500ms refresh time means we don't hammer the panel.
 SERIAL_BAUD = 115200   # v0.6 first cut — see main.cpp note about baud bump issues
-FRAME_W, FRAME_H = 540, 960
+DEFAULT_RENDER_PROFILE = card_profiles.get_profile("m5paper-v1.1")
+FRAME_W = int(DEFAULT_RENDER_PROFILE["logical_width"])
+FRAME_H = int(DEFAULT_RENDER_PROFILE["logical_height"])
 FRAME_BYTES = FRAME_W * FRAME_H // 2   # 259,200
 PAPER_S3_RAW_FW_TOKEN = "paper-s3-frame"
 SERIAL_RAW_WRITE_SIZE = 512
@@ -126,6 +134,7 @@ WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
                 "inbox", "next-meeting", "pr-queue",
                 "break-reminder", "deadlines")
 TRANSPORT = None
+REQUESTED_PROFILE = "auto"
 
 
 def log(*a, **kw): print(*a, file=sys.stderr, flush=True, **kw)
@@ -612,7 +621,34 @@ def _paper_s3_raw_frame_supported() -> bool:
 
 
 def _selected_profile_label() -> str:
-    return "paper-s3" if _paper_s3_raw_frame_supported() else "m5paper-v1.1"
+    detected = _detected_profile_label()
+    if detected:
+        return detected
+    if REQUESTED_PROFILE != "auto":
+        return REQUESTED_PROFILE
+    return card_profiles.default_profile_name()
+
+
+def _detected_profile_label() -> str | None:
+    detected = card_profiles.detect_profile_from_status({
+        "device": DEVICE_TELEMETRY.get("device"),
+        "firmware": DEVICE_TELEMETRY.get("firmware"),
+        "fw": DEVICE_TELEMETRY.get("fw"),
+        "model": DEVICE_TELEMETRY.get("model"),
+    })
+    return detected
+
+
+def _selected_profile_source() -> str:
+    if _detected_profile_label():
+        return "telemetry"
+    if REQUESTED_PROFILE != "auto":
+        return "requested"
+    return "default"
+
+
+def _selected_profile() -> dict:
+    return card_profiles.get_profile(_selected_profile_label())
 
 
 def _frame_raw_begin_command(fid: int, byte_count: int, crc: int) -> dict:
@@ -966,17 +1002,16 @@ def _settings_state() -> dict:
     visible facts (transport, baud, daemon_ok)."""
     transport_name = (type(TRANSPORT).__name__.replace("Transport", "").upper()
                       if TRANSPORT else "—")
+    profile = _selected_profile()
     state = dict(DEVICE_TELEMETRY)   # battery, firmware, mac, uptime, battery_mv ...
-    state.setdefault("model", state.get("device", "M5Paper V1.1"))
+    state.setdefault("model", state.get("device", profile["device_name"]))
     state["transport"] = transport_name
     state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
     state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
     state["ble_paired"] = False
     state["ui_state"] = UI_STATE
     state["last_error"] = UI_LAST_ERROR
-    state["firmware_profile"] = (
-        "paper-s3" if _paper_s3_raw_frame_supported() else "m5paper-v1.1"
-    )
+    state["firmware_profile"] = profile["name"]
     state["ip"] = state.get("wifi_ip") or "—"
     if _FRAME_LAST_PUSH > 0:
         state["last_frame_age_s"] = int(time.time() - _FRAME_LAST_PUSH)
@@ -1085,6 +1120,7 @@ def _finish_frame_status(result: str, *, error: str = "",
 def _frame_status_snapshot() -> dict:
     with FRAME_STATUS_LOCK:
         status = copy.deepcopy(FRAME_STATUS)
+    status["profile_source"] = _selected_profile_source()
     status["ui_state"] = UI_STATE
     status["last_error"] = UI_LAST_ERROR
     status["last_frame_time"] = (
@@ -1422,9 +1458,14 @@ class CardHandler(BaseHTTPRequestHandler):
         if path == "/widget":
             return self._reply(200, {"widgets": _widget_snapshot()})
         if path == "/pair-status":
+            profile = _selected_profile()
             return self._reply(200, {
                 "connected": TRANSPORT is not None and TRANSPORT.connected(),
                 "transport": type(TRANSPORT).__name__ if TRANSPORT else None,
+                "selected_profile": profile["name"],
+                "profile_source": _selected_profile_source(),
+                "device_name": profile["device_name"],
+                "preferred_transport": profile["preferred_transport"],
             })
         if path == "/frame-status":
             return self._reply(200, _frame_status_snapshot())
@@ -1435,6 +1476,7 @@ class CardHandler(BaseHTTPRequestHandler):
             # Aggregates everything we know about whether the device is
             # actually reachable RIGHT NOW (vs. "transport was picked at
             # startup but we never heard back").
+            profile = _selected_profile()
             seen_s = _device_seen_seconds_ago()
             return self._reply(200, {
                 "alive":              _device_alive(),
@@ -1445,6 +1487,9 @@ class CardHandler(BaseHTTPRequestHandler):
                 "battery_pct":        DEVICE_TELEMETRY.get("battery_pct"),
                 "uptime":             DEVICE_TELEMETRY.get("uptime"),
                 "firmware":           DEVICE_TELEMETRY.get("firmware"),
+                "selected_profile":   profile["name"],
+                "profile_source":     _selected_profile_source(),
+                "device_name":        profile["device_name"],
                 "wifi_connected":     DEVICE_TELEMETRY.get("wifi_connected"),
                 "wifi_ip":            DEVICE_TELEMETRY.get("wifi_ip"),
             })
@@ -1907,14 +1952,23 @@ def pick_transport(kind: str, port: str | None) -> Transport:
 
 
 def main():
-    global TRANSPORT
+    global TRANSPORT, REQUESTED_PROFILE
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
     ap.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"),
                     default="auto")
+    ap.add_argument("--profile", choices=card_profiles.profile_choices(include_auto=True),
+                    default="auto",
+                    help="device profile hint; auto keeps firmware-based detection")
     ap.add_argument("--http-port", type=int, default=9877)
     ap.add_argument("--owner", default=os.environ.get("USER", ""))
     args = ap.parse_args()
+
+    REQUESTED_PROFILE = args.profile
+    if REQUESTED_PROFILE != "auto":
+        profile = card_profiles.get_profile(REQUESTED_PROFILE)
+        log(f"[profile] requested={profile['name']} device={profile['device_name']} "
+            f"preferred_transport={profile['preferred_transport']}")
 
     TRANSPORT = pick_transport(args.transport, args.port)
     # If Wi-Fi is the primary push channel AND a USB serial cable is

@@ -4,12 +4,13 @@
 ![License](https://img.shields.io/github/license/op7418/ai-desk-card?style=flat-square)
 ![Skill](https://img.shields.io/badge/Skill-Agent-111111?style=flat-square)
 ![M5Paper](https://img.shields.io/badge/M5Paper-V1.1-0A7CFF?style=flat-square)
+![PaperS3](https://img.shields.io/badge/M5Stack-PaperS3-111111?style=flat-square)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-Supported-6B5B95?style=flat-square)
 ![Codex](https://img.shields.io/badge/Codex-Supported-222222?style=flat-square)
 
 > 🌏 **English version: [README.en.md](./README.en.md)**
 
-一个适配 Claude Code / Codex 等 Agent 的桌面副屏 Skill。把 [M5Paper V1.1](https://docs.m5stack.com/en/core/m5paper) 4.7 寸墨水屏立在显示器旁边，由 AI Agent 推送 widget：天气、日程、todo、PR 队列、AI 状态、休息提醒……
+一个适配 Claude Code / Codex 等 Agent 的桌面副屏 Skill。把 [M5Paper V1.1](https://docs.m5stack.com/en/core/m5paper) 或 M5Stack PaperS3 墨水屏立在显示器旁边，由 AI Agent 推送 widget：天气、日程、todo、PR 队列、AI 状态、休息提醒……
 
 **装上 Skill 后，烧固件 / 配 Wi-Fi / 推内容 / 设置定时全部由 Agent 引导**，你不用自己跑一行 `pio` 或 `curl`。
 
@@ -119,11 +120,52 @@ Skill 会自动：
 |------|------|
 | **M5Paper V1.1** | 主力支持。约 ¥600 / $90。[官方店](https://shop.m5stack.com/products/m5paper-v1-1) / Amazon / AliExpress |
 | M5Paper V1.0 | 大概率可用，电池阈值参数 (`4150 mV`) 可能要调 |
-| M5Paper S3 | 需要 1-2 天移植（BLE stack 不同）|
+| **M5Stack PaperS3** | 已支持 `paper-s3` profile：编译、烧录、USB serial daemon、真实 widget/card、触摸 UI action |
 | USB-C **数据线** | 烧固件时用一次。普通"只充电"线不行 |
 | (可选) USB-C 充电器 | 想用"常插电 + Wi-Fi 常开"模式需要 |
 
 > ⚠️ **不需要事先装 PlatformIO / 编译器 / Python 环境** — Skill 检测到缺什么会让 Agent 自己装。
+
+## PaperS3 Windows 11 PowerShell quick start
+
+PaperS3 当前稳定路径是 USB serial raw full-frame push。Windows 11 PowerShell 用户不需要 VS Code，也不需要 WSL USB 直通。
+
+```powershell
+cd E:\dev\ai-desk-card
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+
+# 查看 COM 口
+[System.IO.Ports.SerialPort]::GetPortNames()
+
+# 编译 / 烧录 / 串口日志
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+
+# 启动 daemon。串口 monitor 和 daemon 不能同时占用 COM3。
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+
+# 另开一个 PowerShell，推 demo widget
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget calendar-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget todo-mock
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget ai-status
+
+# 诊断
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+```
+
+如果烧录或刷新失败，请复制：
+
+- daemon 日志中包含 `[widget]`, `[render]`, `[transfer]`, `[frame]`, `[action]` 的行
+- PaperS3 串口日志中包含 `[rx]`, `[frame]`, `[display]`, `[touch]` 的行
+- `GET http://127.0.0.1:9877/frame-status` 的输出
+
+PaperS3 当前限制：BLE 暂不支持，deep sleep 暂不支持，battery policy 暂不支持。需要外部数据的 widget 可以继续用 mock/sample demo 验收。
 
 ## 安装
 
@@ -333,7 +375,7 @@ AI Agent ──────┐                                  │
 不用。装完 Skill 后跟 Agent 说"帮我装卡片"，Agent 会探测状态 → 装 PlatformIO（如果没装）→ `pio run -t upload` → 烧 CJK 字体 → 全程告诉你它在干什么。
 
 **Q: 我没有 M5Paper V1.1，别的硬件可以吗？**
-M5Paper V1.0 大概率能用。M5Paper S3 需要移植（BLE stack 不同）。Inkplate / Waveshare 等其他 ESP32 + e-ink 板还没支持，roadmap 上有。
+M5Paper V1.0 大概率能用。M5Stack PaperS3 已支持 `paper-s3` profile，可走 Windows PowerShell + USB serial daemon/widget 流程；BLE、deep sleep、电池策略仍未实现。Inkplate / Waveshare 等其他 ESP32 + e-ink 板还没支持，roadmap 上有。
 
 **Q: 必须用 Claude Code 吗？**
 不必。`SKILL.md` 是 agent-agnostic 入口，任何识别这格式 + 有 shell 权限的 Agent 都能用（Codex / Cursor / Aider / 自写 Agent）。`plugin/` 里的 slash 命令是 Claude Code 用户的便利层，不是核心。
@@ -348,14 +390,14 @@ M5Paper V1.0 大概率能用。M5Paper S3 需要移植（BLE stack 不同）。I
 跟 Agent 说"帮我更新 ai-desk-card 然后重新烧一次"。Skill 会拉新代码 + build + upload。
 
 **Q: 不在 macOS 上能用吗？**
-daemon 在 Linux 也应该能跑（未深度测试）。Windows 需要 WSL2。烧固件部分 PlatformIO 跨平台。
+daemon 在 Linux 也应该能跑（未深度测试）。M5Paper V1.1 老流程仍偏 macOS/Linux；PaperS3 quick start 已支持 Windows 11 PowerShell 原生 COM 口，不需要 WSL USB 直通。烧固件部分 PlatformIO 跨平台。
 
 **Q: 数据会上云吗？**
 不会。daemon 默认绑 127.0.0.1（除了 device→daemon 的 status_report 走 LAN）。Wi-Fi 凭证写在设备 NVS，不会进 daemon 日志、不会进 git。
 
 ## Roadmap
 
-- M5Paper V1.0 / S3 移植验证
+- M5Paper V1.0 验证；PaperS3 的 BLE / deep sleep / battery policy 后续阶段
 - Inkplate / Waveshare 等其他 e-ink 板支持
 - Captive portal Wi-Fi 配网（不用通过 daemon）
 - 硬件按钮长按 2s 关机时拦截 → 先推名片再 deep_sleep（Plan C）
@@ -370,7 +412,7 @@ daemon 在 Linux 也应该能跑（未深度测试）。Windows 需要 WSL2。�
 
 - 硬件实拍照 / 视频（帮新用户看清产品形态）
 - Linux / Windows 上 daemon 测试报告
-- M5Paper V1.0 / S3 移植验证
+- M5Paper V1.0 验证；PaperS3 BLE / deep sleep / battery policy 测试报告
 - 新 widget schema + 渲染器
 - 翻译 / 文档优化
 

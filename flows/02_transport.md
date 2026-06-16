@@ -37,6 +37,11 @@ kill it. Then retry step 1.
 
 ## Step 3 — BLE-only mode (battery-powered + no Wi-Fi)
 
+Skip this step for `paper-s3`: BLE standby, deep sleep, and battery policy
+are not implemented for PaperS3 in Phase 6. For PaperS3, close any serial
+monitor, restart the daemon with `--profile paper-s3 --transport serial
+--port <COM port>`, then run `scripts/diagnose_device.py --profile paper-s3`.
+
 If the user is operating in battery + BLE-standby mode (architecture C),
 the device's Wi-Fi may be off — the daemon needs to wake it via BLE
 first. This only works if BLE is paired:
