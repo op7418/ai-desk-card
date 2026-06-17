@@ -63,7 +63,7 @@ pio run -e paper-color
 pio run -e paper-color -t upload   # no uploadfs needed (built-in font)
 ```
 
-**M5Stack PaperS3** (Phase 6 profile):
+**M5Stack PaperS3** (Phase 7 profile):
 
 ```powershell
 $env:PLATFORMIO_CORE_DIR=".pio-core"
@@ -73,10 +73,13 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 ```
 
 PaperS3 does not use the M5Paper V1.1 BLE/deep-sleep/battery-policy path.
-Use USB serial for daemon/widget verification:
+Use USB serial for the first daemon/provisioning step, then switch to Wi-Fi:
 
 ```powershell
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+$body = @{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body $body
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 ```
 

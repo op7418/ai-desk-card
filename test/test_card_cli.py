@@ -40,6 +40,42 @@ class CardCliTest(unittest.TestCase):
             "--port", "COM3",
         ])
 
+    def test_daemon_command_can_select_wifi_host_and_port(self):
+        import card_cli
+        import card_profiles
+
+        profile = card_profiles.get_profile("paper-s3")
+        command = card_cli.daemon_command(
+            profile,
+            root=ROOT,
+            transport="wifi",
+            host="192.0.2.55",
+            wifi_port=9899,
+        )
+
+        self.assertEqual(command[-8:], [
+            "--profile", "paper-s3",
+            "--transport", "wifi",
+            "--host", "192.0.2.55",
+            "--wifi-port", "9899",
+        ])
+
+    def test_daemon_command_can_bind_http_host_for_wifi_callbacks(self):
+        import card_cli
+        import card_profiles
+
+        profile = card_profiles.get_profile("paper-s3")
+        command = card_cli.daemon_command(
+            profile,
+            root=ROOT,
+            transport="wifi",
+            host="192.0.2.55",
+            http_host="0.0.0.0",
+        )
+
+        self.assertIn("--http-host", command)
+        self.assertIn("0.0.0.0", command)
+
     def test_demo_command_defaults_to_dashboard_for_first_push(self):
         import card_cli
 

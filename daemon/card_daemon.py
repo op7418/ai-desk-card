@@ -37,6 +37,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+import urllib.error
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -227,6 +228,7 @@ class WiFiTransport(Transport):
         self.ip = ip
         self.port = port
         self._connect_ok = True
+        self.last_error = ""
 
     def start(self, on_byte, on_connect=None):
         # HTTP has no persistent connection to "start". Run the handshake
@@ -254,28 +256,60 @@ class WiFiTransport(Transport):
             with urllib.request.urlopen(req, timeout=4) as r:
                 _ = r.read()
             self._connect_ok = True
+            self.last_error = ""
         except Exception as e:
             log(f"[wifi] cmd {obj.get('cmd')!r}: {e!r}")
+            self.last_error = f"cmd {obj.get('cmd')!r} {self.ip}:{self.port}: {e!r}"
             self._connect_ok = False
 
+    def _set_error(self, context: str, exc: Exception):
+        reason = getattr(exc, "reason", exc)
+        self.last_error = f"{context} {self.ip}:{self.port}: {reason!r}"
+        log(f"[wifi] {self.last_error}")
+        self._connect_ok = False
+
     def push_frame_http(self, packed: bytes,
-                        region: "tuple | None") -> bool:
+                        region: "tuple | None",
+                        *,
+                        fid: int | None = None,
+                        crc: int | None = None) -> bool:
         import urllib.request
         url = f"http://{self.ip}:{self.port}/frame"
         if region is not None:
             x, y, w, h = region
             url += f"?x={x}&y={y}&w={w}&h={h}"
+        else:
+            w, h = FRAME_W, FRAME_H
+        headers = {"Content-Type": "application/octet-stream"}
+        if fid is not None:
+            headers["X-Frame-Fid"] = str(int(fid))
+        headers["X-Frame-Width"] = str(int(w))
+        headers["X-Frame-Height"] = str(int(h))
+        headers["X-Frame-Bpp"] = "4"
+        headers["X-Frame-Bytes"] = str(len(packed))
+        if crc is not None:
+            headers["X-Frame-Crc"] = f"{int(crc) & 0xFFFFFFFF:08x}"
         try:
             req = urllib.request.Request(
                 url, data=packed, method="POST",
-                headers={"Content-Type": "application/octet-stream"})
+                headers=headers)
             with urllib.request.urlopen(req, timeout=15) as r:
                 ok = (r.status == 200)
             self._connect_ok = ok
+            self.last_error = "" if ok else f"frame HTTP status {r.status}"
             return ok
-        except Exception as e:
-            log(f"[wifi] frame: {e!r}")
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            self.last_error = f"frame HTTP {self.ip}:{self.port}: {e.code} {body}".strip()
+            log(f"[wifi] {self.last_error}")
             self._connect_ok = False
+            return False
+        except Exception as e:
+            self._set_error("frame", e)
             return False
 
     def connected(self) -> bool:
@@ -441,6 +475,8 @@ def _telemetry_listener(line: str):
         "wifi_ssid":       "wifi_ssid",
         "wifi_ip":         "wifi_ip",
         "wifi_rssi":       "wifi_rssi",
+        "wifi_state":      "wifi_state",
+        "wifi_error":      "wifi_error",
         "frame_state":     "frame_state",
     }
     for src, dst in mapping.items():
@@ -837,11 +873,12 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None) -> bool:
         with _FRAME_LOCK:
             _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
             fid = _FRAME_ID
+            crc = _crc32(packed)
             t0 = time.time()
-            ok = TRANSPORT.push_frame_http(packed, region)
+            ok = TRANSPORT.push_frame_http(packed, region, fid=fid, crc=crc)
             dt = time.time() - t0
             kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
-            log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
+            log(f"[frame] http push fid={fid} crc={crc:08x} {len(packed)}B {kind} ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
         return bool(ok)
 
@@ -1132,6 +1169,9 @@ def _frame_status_snapshot() -> dict:
     )
     status["transport_connected"] = TRANSPORT is not None and TRANSPORT.connected()
     status["active_transport"] = _active_transport_label()
+    status["wifi_state"] = DEVICE_TELEMETRY.get("wifi_state")
+    status["wifi_error"] = DEVICE_TELEMETRY.get("wifi_error")
+    status["wifi_ip"] = DEVICE_TELEMETRY.get("wifi_ip")
     return status
 
 
@@ -1312,6 +1352,38 @@ def render_and_push():
         log("[frame] refresh request end result=ok")
         return
 
+    if isinstance(TRANSPORT, WiFiTransport) and _selected_profile_label() == "paper-s3":
+        packed = card_render.to_4bpp_packed(img)
+        _LAST_FRAME_IMG = img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
+        transfer = {
+            "method": _transfer_method_label(None),
+            "target": _transfer_target_label(),
+            "bytes": len(packed),
+        }
+        log(f"[diff] paper-s3 wifi -> full frame {len(packed)}B")
+        log(f"[transfer] start id={render_id} method={transfer['method']} "
+            f"target={transfer['target']} bytes={transfer['bytes']}")
+        ok = push_frame_bytes(packed, region=None)
+        log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
+        if not ok:
+            detail = getattr(TRANSPORT, "last_error", "") if TRANSPORT else ""
+            err = "paper-s3 wifi frame push failed"
+            if detail:
+                err += f": {detail}"
+            _set_ui_error(err)
+            _finish_frame_status("failed", error=err,
+                                 output=output, transfer=transfer)
+            log("[frame] refresh request end result=failed")
+            return
+        _send_chip_rects(VIEW_HOT_ZONES, force=True)
+        _FRAME_LAST_PUSH = time.time()
+        _clear_ui_error("frame push succeeded")
+        _transition_ui_state(_resting_ui_state(), "frame push complete")
+        _finish_frame_status("ok", output=output, transfer=transfer)
+        log("[frame] refresh request end result=ok")
+        return
+
     # v0.9: tell the firmware which rectangles are currently tappable, so
     # it can paint a fast partial-refresh tap-ack (~150ms) before our
     # render+push comes back. Send before the push so the firmware has
@@ -1415,6 +1487,19 @@ def widget_validate(payload: dict) -> tuple:
     return True, ""
 
 
+def _wifi_provision_command(payload: dict) -> tuple[dict | None, str | None]:
+    """Build the firmware command for /provision-wifi without logging secrets."""
+    if "ssid" not in payload:
+        return None, "ssid required"
+    ssid = str(payload.get("ssid") or "").strip()
+    if not ssid:
+        return {"cmd": "wifi_set", "ssid": "", "password": ""}, None
+    pwd = payload.get("password", "")
+    if pwd is None:
+        pwd = ""
+    return {"cmd": "wifi_set", "ssid": ssid, "password": str(pwd)}, None
+
+
 # ---- HTTP server ----
 
 class CardHandler(BaseHTTPRequestHandler):
@@ -1492,6 +1577,8 @@ class CardHandler(BaseHTTPRequestHandler):
                 "device_name":        profile["device_name"],
                 "wifi_connected":     DEVICE_TELEMETRY.get("wifi_connected"),
                 "wifi_ip":            DEVICE_TELEMETRY.get("wifi_ip"),
+                "wifi_state":         DEVICE_TELEMETRY.get("wifi_state"),
+                "wifi_error":         DEVICE_TELEMETRY.get("wifi_error"),
             })
         return self._reply(404, {"error": f"unknown GET {path!r}"})
 
@@ -1600,7 +1687,8 @@ class CardHandler(BaseHTTPRequestHandler):
             try:
                 # Pass through Wi-Fi fields too — firmware sends them as
                 # top-level keys (wifi_connected, wifi_ip, wifi_ssid, wifi_rssi).
-                for k in ("wifi_connected", "wifi_ssid", "wifi_ip", "wifi_rssi", "on_usb"):
+                for k in ("wifi_connected", "wifi_ssid", "wifi_ip", "wifi_rssi",
+                          "wifi_state", "wifi_error", "on_usb"):
                     if k in payload:
                         DEVICE_TELEMETRY[k] = payload[k]
                 if "battery_pct" in payload: DEVICE_TELEMETRY["battery_pct"] = int(payload["battery_pct"])
@@ -1674,11 +1762,13 @@ class CardHandler(BaseHTTPRequestHandler):
         if path == "/provision-wifi":
             # v0.8: forward Wi-Fi credentials to firmware via whatever
             # transport is up (serial / BLE / Wi-Fi itself works too).
-            ssid = (payload.get("ssid") or "").strip()
-            pwd  = payload.get("password", "")
-            if not ssid:
-                return self._reply(400, {"error": "ssid required (use \"\" to forget)"})
-            send_line({"cmd": "wifi_set", "ssid": ssid, "password": pwd})
+            cmd, err = _wifi_provision_command(payload)
+            if err:
+                return self._reply(400, {"error": err})
+            send_line(cmd)
+            if not cmd.get("ssid"):
+                return self._reply(200, {"ok": True,
+                                         "note": "wifi credentials clear command sent"})
             return self._reply(200, {"ok": True,
                                      "note": "credentials sent to device; "
                                              "watch ack:status for wifi_connected"})
@@ -1916,8 +2006,23 @@ def _start_side_serial_reader(port: str):
     threading.Thread(target=_reader, daemon=True).start()
 
 
-def pick_transport(kind: str, port: str | None) -> Transport:
-    if port:
+def _resolve_wifi_port(serial_or_wifi_port: str | None,
+                       wifi_port: int | None) -> int:
+    if wifi_port:
+        return int(wifi_port)
+    if serial_or_wifi_port:
+        try:
+            return int(serial_or_wifi_port)
+        except ValueError:
+            sys.exit("--transport wifi expects --host plus a numeric --port, "
+                     "or use --wifi-port for the device HTTP port")
+    return _BURST_HTTP_PORT
+
+
+def pick_transport(kind: str, port: str | None,
+                   *, host: str | None = None,
+                   wifi_port: int | None = None) -> Transport:
+    if kind != "wifi" and port:
         return SerialTransport(port)
     candidates = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
     if kind == "serial":
@@ -1926,6 +2031,10 @@ def pick_transport(kind: str, port: str | None) -> Transport:
     if kind == "ble":
         return BLETransport()
     if kind == "wifi":
+        if host:
+            p = _resolve_wifi_port(port, wifi_port)
+            log(f"[transport] using Wi-Fi {host}:{p}")
+            return WiFiTransport(host, p)
         peer = discover_wifi_device(timeout_s=5.0)
         if not peer: sys.exit("no _ai-desk-card._tcp peer found on LAN")
         ip, p = peer
@@ -1951,18 +2060,28 @@ def pick_transport(kind: str, port: str | None) -> Transport:
     return BLETransport()
 
 
-def main():
-    global TRANSPORT, REQUESTED_PROFILE
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
+    ap.add_argument("--host",
+                    help="PaperS3 device IP/host for --transport wifi")
+    ap.add_argument("--wifi-port", type=int, default=None,
+                    help="PaperS3 HTTP frame port for --transport wifi")
     ap.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"),
                     default="auto")
     ap.add_argument("--profile", choices=card_profiles.profile_choices(include_auto=True),
                     default="auto",
                     help="device profile hint; auto keeps firmware-based detection")
+    ap.add_argument("--http-host", default="127.0.0.1",
+                    help="daemon HTTP bind host; use 0.0.0.0 only when a device must call back over Wi-Fi")
     ap.add_argument("--http-port", type=int, default=9877)
     ap.add_argument("--owner", default=os.environ.get("USER", ""))
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    global TRANSPORT, REQUESTED_PROFILE
+    args = build_arg_parser().parse_args()
 
     REQUESTED_PROFILE = args.profile
     if REQUESTED_PROFILE != "auto":
@@ -1970,7 +2089,12 @@ def main():
         log(f"[profile] requested={profile['name']} device={profile['device_name']} "
             f"preferred_transport={profile['preferred_transport']}")
 
-    TRANSPORT = pick_transport(args.transport, args.port)
+    TRANSPORT = pick_transport(
+        args.transport,
+        args.port,
+        host=args.host,
+        wifi_port=args.wifi_port,
+    )
     # If Wi-Fi is the primary push channel AND a USB serial cable is
     # plugged in, also open it read-only for the device's inbound JSON
     # lines (status_report / touch). Without this, arch-A Wi-Fi-only mode
@@ -2007,8 +2131,8 @@ def main():
         # transport. USB and Wi-Fi don't have anything to power down.
         threading.Thread(target=_burst_power_down_loop, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), CardHandler)
-    log(f"[http] listening on 127.0.0.1:{args.http_port}")
+    srv = ThreadingHTTPServer((args.http_host, args.http_port), CardHandler)
+    log(f"[http] listening on {args.http_host}:{args.http_port}")
     log(f"[ready] ai-desk-card daemon v0.8 — push widgets via POST /widget")
     try: srv.serve_forever()
     except KeyboardInterrupt: log("\n[exit] bye")

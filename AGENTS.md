@@ -444,6 +444,89 @@ C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe E:\dev\ai
   `paper-s3`, `raw-serial`, `259200B`, `result=ok`,
   `selected_widgets=['weather','calendar','todo','ai-status']`.
 
+Phase 7 completed:
+
+- PaperS3 now has a profile-local Wi-Fi transport path; USB serial remains the
+  provisioning and fallback path.
+- PaperS3 firmware adds Wi-Fi credential storage, bounded reconnect attempts,
+  HTTP server endpoints (`GET /status`, `POST /cmd`, `POST /frame`), and mDNS
+  advertising for `_ai-desk-card._tcp`.
+- PaperS3 HTTP frames remain full logical `540x960` 4bpp frames (`259200B`).
+  The device validates width, height, bpp, byte count, and CRC before painting;
+  bad or partial frames keep the previous e-ink image.
+- The daemon can run directly against a known PaperS3 IP:
+  `--profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0`.
+- Daemon Wi-Fi frame pushes include integrity headers:
+  `X-Frame-Fid`, `X-Frame-Width`, `X-Frame-Height`, `X-Frame-Bpp`,
+  `X-Frame-Bytes`, and `X-Frame-Crc`.
+- `POST /provision-wifi` still goes through the daemon, sends credentials over
+  the active device transport, and supports an empty SSID to clear credentials.
+- PaperS3 status and `/frame-status` now expose Wi-Fi state/error/IP/RSSI so
+  failures are visible without guessing.
+- `scripts/diagnose_device.py` supports PaperS3 Wi-Fi checks with
+  `--transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0`.
+- `scripts/collect_papers3_wifi_report.py` prints a redacted Markdown report
+  for daemon, frame, and PaperS3 `/status`; it masks SSIDs and redacts secrets.
+- README, install/transport flows, `SKILL.md`, card-widget skill docs, and
+  `card-start` command docs now treat PaperS3 Wi-Fi as the recommended route
+  after USB serial provisioning.
+- BLE, deep sleep, battery policy, and power optimization remain out of scope.
+  Do not add them unless a later phase explicitly asks.
+
+Useful Phase 7 PaperS3 commands:
+
+```powershell
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+
+$body = @{ssid="YOUR_WIFI_SSID"; password="YOUR_WIFI_PASSWORD"} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body $body
+
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+.\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
+```
+
+For Phase 7 failures, collect daemon lines containing `[widget]`, `[render]`,
+`[transfer]`, `[frame]`, `[action]`, and `[wifi]`; PaperS3 serial lines
+containing `[rx]`, `[frame]`, `[display]`, `[touch]`, `[wifi]`, `[http]`, and
+`[mdns]`; plus `GET http://127.0.0.1:9877/frame-status` and the redacted
+report from `scripts\collect_papers3_wifi_report.py`.
+
+Phase 7 real-device acceptance:
+
+- User provisioned PaperS3 onto Wi-Fi and ran the daemon with
+  `--profile paper-s3 --transport wifi --host 192.168.137.143 --wifi-port 9880
+  --http-host 0.0.0.0`.
+- Redacted Wi-Fi report showed PaperS3 online at `192.168.137.143`,
+  `state=WIFI_CONNECTED`, RSSI `-38`, `last_error=none`, battery `73%`,
+  `on_usb=true`, and firmware `/status` `frame_state=displayed`.
+- Daemon `/frame-status` reported `selected_profile=paper-s3`,
+  `active_transport=Wi-Fi`, transfer `method=http`, `target=wifi`,
+  `bytes=259200`, `result=ok`, output `540x960` `4bpp`.
+- After adding `--http-host 0.0.0.0`, daemon `/heartbeat` reported
+  `alive=true`, `last_seen_seconds=10`, `battery_pct=77`, `uptime=49m`,
+  `wifi_connected=true`, `wifi_ip=192.168.137.143`, and
+  `wifi_state=WIFI_CONNECTED`.
+- User tapped the PaperS3 settings chip over Wi-Fi. Daemon logged
+  `[touch<http] mapped x=469 y=953 hold_ms=168`, hit target
+  `id=settings rect=(416, 900, 520, 960)`, accepted `action:settings`,
+  transitioned `DISPLAYING_FRAME -> STATUS -> RECEIVING_FRAME`, rendered the
+  status view, and pushed a full HTTP frame `259200B` with
+  `crc=86b4e7d3` in `1.76s`.
+
+Verification run in Phase 7:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card;E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py scripts\card_cli.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py scripts\collect_papers3_wifi_report.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

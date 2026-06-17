@@ -2,7 +2,7 @@ import unittest
 
 
 class DeviceProfilesTest(unittest.TestCase):
-    def test_paper_s3_profile_has_required_phase6_fields(self):
+    def test_paper_s3_profile_has_required_phase7_fields(self):
         import card_profiles
 
         profile = card_profiles.get_profile("paper-s3")
@@ -12,7 +12,7 @@ class DeviceProfilesTest(unittest.TestCase):
         self.assertEqual(profile["logical_width"], 540)
         self.assertEqual(profile["logical_height"], 960)
         self.assertEqual(profile["display_format"], "4bpp grayscale")
-        self.assertEqual(profile["preferred_transport"], "USB serial")
+        self.assertEqual(profile["preferred_transport"], "Wi-Fi")
         self.assertEqual(profile["frame_bytes"], 259200)
         self.assertEqual(profile["supported_features"], {
             "frame_rendering": True,

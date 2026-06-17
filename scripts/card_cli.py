@@ -53,7 +53,10 @@ def platformio_command(profile: dict, action: str, *,
 
 def daemon_command(profile: dict, *, root: str = ROOT,
                    transport: str | None = None,
-                   port: str | None = None) -> list[str]:
+                   port: str | None = None,
+                   host: str | None = None,
+                   wifi_port: int | None = None,
+                   http_host: str | None = None) -> list[str]:
     cmd = [
         python_executable(root),
         os.path.join(root, "daemon", "card_daemon.py"),
@@ -63,6 +66,12 @@ def daemon_command(profile: dict, *, root: str = ROOT,
         cmd.extend(["--transport", transport])
     if port:
         cmd.extend(["--port", port])
+    if host:
+        cmd.extend(["--host", host])
+    if wifi_port:
+        cmd.extend(["--wifi-port", str(int(wifi_port))])
+    if http_host:
+        cmd.extend(["--http-host", http_host])
     return cmd
 
 
@@ -124,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
     add_profile(p_daemon)
     p_daemon.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"))
     p_daemon.add_argument("--port")
+    p_daemon.add_argument("--host")
+    p_daemon.add_argument("--wifi-port", type=int)
+    p_daemon.add_argument("--http-host")
 
     p_demo = sub.add_parser("demo", help="Push a demo widget through the daemon.")
     add_profile(p_demo)
@@ -154,7 +166,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {"build", "upload", "monitor"}:
         cmd = platformio_command(profile, args.command, port=getattr(args, "port", None))
     elif args.command == "daemon":
-        cmd = daemon_command(profile, transport=args.transport, port=args.port)
+        cmd = daemon_command(
+            profile,
+            transport=args.transport,
+            port=args.port,
+            host=args.host,
+            wifi_port=args.wifi_port,
+            http_host=args.http_host,
+        )
     elif args.command == "demo":
         cmd = demo_command(profile, args.widget)
     else:

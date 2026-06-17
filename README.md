@@ -120,7 +120,7 @@ Skill 会自动：
 |------|------|
 | **M5Paper V1.1** | 主力支持。约 ¥600 / $90。[官方店](https://shop.m5stack.com/products/m5paper-v1-1) / Amazon / AliExpress |
 | M5Paper V1.0 | 大概率可用，电池阈值参数 (`4150 mV`) 可能要调 |
-| **M5Stack PaperS3** | 已支持 `paper-s3` profile：编译、烧录、USB serial daemon、真实 widget/card、触摸 UI action |
+| **M5Stack PaperS3** | 已支持 `paper-s3` profile：编译、烧录、Wi-Fi/USB daemon、真实 widget/card、触摸 UI action |
 | USB-C **数据线** | 烧固件时用一次。普通"只充电"线不行 |
 | (可选) USB-C 充电器 | 想用"常插电 + Wi-Fi 常开"模式需要 |
 
@@ -128,7 +128,7 @@ Skill 会自动：
 
 ## PaperS3 Windows 11 PowerShell quick start
 
-PaperS3 当前稳定路径是 USB serial raw full-frame push。Windows 11 PowerShell 用户不需要 VS Code，也不需要 WSL USB 直通。
+PaperS3 当前推荐路径是：USB serial 完成烧录和一次性 Wi-Fi 配置，然后 daemon 通过 Wi-Fi HTTP 推送完整 `540x960` 4bpp frame。Windows 11 PowerShell 用户不需要 VS Code，也不需要 WSL USB 直通。
 
 ```powershell
 cd E:\dev\ai-desk-card
@@ -142,10 +142,17 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 
-# 启动 daemon。串口 monitor 和 daemon 不能同时占用 COM3。
+# 第一次先用 USB serial 启动 daemon。串口 monitor 和 daemon 不能同时占用 COM3。
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
 
-# 另开一个 PowerShell，推 demo widget
+# 另开 PowerShell，把 Wi-Fi 凭据写进设备 NVS。密码不会写进 repo 或 daemon 日志。
+$body = @{ssid="<2.4GHz Wi-Fi 名称>"; password="<Wi-Fi 密码>"} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body $body
+
+# 等串口日志出现 [wifi] connected ip=...，记下 PaperS3 IP，然后重启 daemon 走 Wi-Fi。
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+
+# 另开一个 PowerShell，推 demo widget。Wi-Fi 失败时可以临时退回上面的 serial daemon 命令。
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
@@ -158,14 +165,26 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget ai-status
 
 # 诊断
-.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 ```
 
 如果烧录或刷新失败，请复制：
 
-- daemon 日志中包含 `[widget]`, `[render]`, `[transfer]`, `[frame]`, `[action]` 的行
-- PaperS3 串口日志中包含 `[rx]`, `[frame]`, `[display]`, `[touch]` 的行
+- daemon 日志中包含 `[widget]`, `[render]`, `[transfer]`, `[frame]`, `[action]`, `[wifi]` 的行
+- PaperS3 串口日志中包含 `[rx]`, `[frame]`, `[display]`, `[touch]`, `[wifi]`, `[http]`, `[mdns]` 的行
 - `GET http://127.0.0.1:9877/frame-status` 的输出
+
+PaperS3 troubleshooting 快查：
+
+| 现象 | 下一步 |
+|---|---|
+| 看不到 COM 口 | 换 USB-C 数据线，关闭串口 monitor，跑 `[System.IO.Ports.SerialPort]::GetPortNames()` |
+| Wi-Fi 配置缺失 | 先启动 serial daemon，再 POST `/provision-wifi` |
+| 密码错误 / 没拿到 IP | 确认 2.4GHz SSID、密码、路由器 WPA2/WPA3 mixed；复制 `[wifi] connect failed` 日志 |
+| host/port 不通 | 用 `--host <PaperS3-IP> --wifi-port 9880`，并确认电脑和 PaperS3 在同一 LAN |
+| frame timeout / bad frame | 复制 daemon `[frame]` / `[wifi]` 和 PaperS3 `[http]` / `[frame]` 日志；旧画面会保留 |
+| 点击 Retry 没反应 | 复制 `[action]` 和 `/frame-status`；无错误时 Retry 会显示 nothing to retry |
+| profile mismatch | daemon 命令显式加 `--profile paper-s3` |
 
 PaperS3 当前限制：BLE 暂不支持，deep sleep 暂不支持，battery policy 暂不支持。需要外部数据的 widget 可以继续用 mock/sample demo 验收。
 
@@ -379,7 +398,7 @@ AI Agent ──────┐                                  │
 不用。装完 Skill 后跟 Agent 说"帮我装卡片"，Agent 会探测状态 → 装 PlatformIO（如果没装）→ `pio run -t upload` → 烧 CJK 字体 → 全程告诉你它在干什么。
 
 **Q: 我没有 M5Paper V1.1，别的硬件可以吗？**
-M5Paper V1.0 大概率能用。M5Stack PaperS3 已支持 `paper-s3` profile，可走 Windows PowerShell + USB serial daemon/widget 流程；BLE、deep sleep、电池策略仍未实现。Inkplate / Waveshare 等其他 ESP32 + e-ink 板还没支持，roadmap 上有。
+M5Paper V1.0 大概率能用。M5Stack PaperS3 已支持 `paper-s3` profile，可走 Windows PowerShell + Wi-Fi/USB daemon/widget 流程；BLE、deep sleep、电池策略仍未实现。Inkplate / Waveshare 等其他 ESP32 + e-ink 板还没支持，roadmap 上有。
 
 **Q: 必须用 Claude Code 吗？**
 不必。`SKILL.md` 是 agent-agnostic 入口，任何识别这格式 + 有 shell 权限的 Agent 都能用（Codex / Cursor / Aider / 自写 Agent）。`plugin/` 里的 slash 命令是 Claude Code 用户的便利层，不是核心。

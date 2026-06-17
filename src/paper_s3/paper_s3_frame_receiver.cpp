@@ -125,6 +125,46 @@ void appendRawBytes(const uint8_t* data, size_t len) {
     }
 }
 
+bool drawHttpFrame(const uint8_t* data, size_t len, uint32_t fid, uint32_t crc) {
+    if (!data) {
+        abortFrame("http-null-frame");
+        return false;
+    }
+    if (len != kFrameBytes4bpp) {
+        Serial.printf("[frame] error: http size mismatch got=%u expected=%u\n",
+                      (unsigned)len, (unsigned)kFrameBytes4bpp);
+        g_state = "http-size-mismatch";
+        return false;
+    }
+
+    g_frameInProgress = true;
+    g_rawMode = false;
+    g_state = "receiving-http";
+    Serial.printf("[frame] http start fid=%u w=%d h=%d bpp=4 bytes=%u crc=%08x\n",
+                  (unsigned)fid, kFrameWidth, kFrameHeight,
+                  (unsigned)len, (unsigned)crc);
+    if (crc != 0) {
+        const uint32_t got = crc32Calc(data, len);
+        if (got != crc) {
+            Serial.printf("[frame] error: http crc mismatch got=%08x expected=%08x\n",
+                          (unsigned)got, (unsigned)crc);
+            abortFrame("http-crc-mismatch");
+            return false;
+        }
+    }
+
+    const bool ok = paper_s3::draw4bppFrame(data, kFrameWidth, kFrameHeight);
+    g_frameInProgress = false;
+    g_state = ok ? "displayed" : "display-error";
+    Serial.printf("[frame] http complete fid=%u bytes=%u result=%s\n",
+                  (unsigned)fid, (unsigned)len, ok ? "ok" : "display-error");
+    return ok;
+}
+
+void setErrorState(const char* reason) {
+    abortFrame(reason ? reason : "error");
+}
+
 bool handleCommand(JsonDocument& doc) {
     const char* cmd = doc["cmd"];
     if (!cmd) return false;

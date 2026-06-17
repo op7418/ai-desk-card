@@ -128,7 +128,7 @@ Auto-sleep at 11pm and show my business card.
 |------|------|
 | **M5Paper V1.1** | Primary target. ~¥600 / $90. [Official store](https://shop.m5stack.com/products/m5paper-v1-1) / Amazon / AliExpress |
 | M5Paper V1.0 | Likely works, battery threshold (`4150 mV`) may need tuning |
-| **M5Stack PaperS3** | Supported via the `paper-s3` profile: build, upload, USB serial daemon, real widgets/cards, and touch UI actions |
+| **M5Stack PaperS3** | Supported via the `paper-s3` profile: build, upload, Wi-Fi/USB daemon, real widgets/cards, and touch UI actions |
 | USB-C **data cable** | Used once for flashing. Charge-only cables don't work |
 | (optional) USB-C charger | Needed for always-on Wi-Fi mode |
 
@@ -136,8 +136,9 @@ Auto-sleep at 11pm and show my business card.
 
 ## PaperS3 Windows 11 PowerShell Quick Start
 
-PaperS3 currently uses the stable USB serial raw full-frame path. Windows
-11 PowerShell users do not need VS Code or WSL USB passthrough.
+PaperS3 now uses USB serial for flashing and one-time Wi-Fi provisioning,
+then Wi-Fi HTTP for full `540x960` 4bpp frame pushes. Windows 11 PowerShell
+users do not need VS Code or WSL USB passthrough.
 
 ```powershell
 cd E:\dev\ai-desk-card
@@ -149,8 +150,15 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 
-# Close the serial monitor before starting the daemon; only one process can own COM3.
+# First start the daemon over USB serial. Close the serial monitor first; only one process can own COM3.
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+
+# In another PowerShell, write Wi-Fi credentials to device NVS. The password is not written to repo or daemon logs.
+$body = @{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body $body
+
+# Wait for a serial log like [wifi] connected ip=..., then restart the daemon over Wi-Fi.
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 
 # In another PowerShell window:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
@@ -164,13 +172,25 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget todo-mock
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget ai-status
 
-.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 ```
 
 For failures, copy daemon lines containing `[widget]`, `[render]`,
-`[transfer]`, `[frame]`, and `[action]`; PaperS3 serial lines containing
-`[rx]`, `[frame]`, `[display]`, and `[touch]`; and
+`[transfer]`, `[frame]`, `[action]`, and `[wifi]`; PaperS3 serial lines containing
+`[rx]`, `[frame]`, `[display]`, `[touch]`, `[wifi]`, `[http]`, and `[mdns]`; and
 `GET http://127.0.0.1:9877/frame-status`.
+
+PaperS3 troubleshooting:
+
+| Symptom | Next step |
+|---|---|
+| No COM port | Try a USB-C data cable, close monitors, run `[System.IO.Ports.SerialPort]::GetPortNames()` |
+| Wi-Fi not configured | Start the serial daemon first, then POST `/provision-wifi` |
+| Wrong password / no IP | Confirm a 2.4GHz SSID, password, and WPA2/WPA3 mixed mode; copy `[wifi] connect failed` logs |
+| Host/port unreachable | Use `--host <PaperS3-IP> --wifi-port 9880` and keep both devices on the same LAN |
+| Frame timeout / bad frame | Copy daemon `[frame]` / `[wifi]` and PaperS3 `[http]` / `[frame]` logs; the previous image is retained |
+| Retry does nothing | Copy `[action]` and `/frame-status`; with no error, Retry reports nothing to retry |
+| Profile mismatch | Start daemon with explicit `--profile paper-s3` |
 
 PaperS3 limits today: BLE is not supported, deep sleep is not supported,
 and battery policy is not supported. Widgets that need external APIs can
@@ -389,7 +409,7 @@ AI Agent ──────┐                                  │
 No. After install, just say "set up the card" — the agent probes state, installs PlatformIO (if missing), runs `pio run -t upload`, flashes the CJK font, and tells you what it's doing at each step.
 
 **Q: I don't have M5Paper V1.1 — anything else?**
-M5Paper V1.0 likely works. M5Stack PaperS3 is supported through the `paper-s3` profile with Windows PowerShell + USB serial daemon/widget workflows; BLE, deep sleep, and battery policy are still not implemented. Inkplate / Waveshare / etc. aren't supported yet — roadmap item.
+M5Paper V1.0 likely works. M5Stack PaperS3 is supported through the `paper-s3` profile with Windows PowerShell + Wi-Fi/USB daemon/widget workflows; BLE, deep sleep, and battery policy are still not implemented. Inkplate / Waveshare / etc. aren't supported yet — roadmap item.
 
 **Q: Do I have to use Claude Code?**
 No. `SKILL.md` is agent-agnostic — any agent that recognizes the format + has shell permission works (Codex / Cursor / Aider / self-built). The `plugin/` slash commands are a Claude Code convenience layer, not the core.

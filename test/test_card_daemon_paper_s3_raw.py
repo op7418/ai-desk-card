@@ -49,6 +49,31 @@ class FakeRawSerialTransport(card_daemon.SerialTransport):
             fn(line)
 
 
+class FakeWiFiTransport(card_daemon.WiFiTransport):
+    def __init__(self):
+        self.ip = "192.0.2.10"
+        self.port = 9880
+        self._connect_ok = True
+        self.last_error = ""
+        self.calls = []
+        self.commands = []
+
+    def push_frame_http(self, packed, region, *, fid=None, crc=None):
+        self.calls.append({
+            "bytes": len(packed),
+            "region": region,
+            "fid": fid,
+            "crc": crc,
+        })
+        return True
+
+    def write(self, data):
+        self.commands.append(data)
+
+    def connected(self):
+        return True
+
+
 class CardDaemonPaperS3RawTest(unittest.TestCase):
     def setUp(self):
         self.old_transport = card_daemon.TRANSPORT
@@ -318,6 +343,8 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             "device": "M5Stack PaperS3",
             "firmware": "0.10.7-paper-s3-frame",
             "wifi_ip": "192.168.4.23",
+            "wifi_state": "WIFI_CONNECTED",
+            "wifi_error": "",
             "frame_state": "displayed",
         })
         card_daemon._FRAME_LAST_PUSH = time.time() - 12
@@ -327,6 +354,8 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
         self.assertEqual(state["model"], "M5Stack PaperS3")
         self.assertEqual(state["firmware_profile"], "paper-s3")
         self.assertEqual(state["ip"], "192.168.4.23")
+        self.assertEqual(state["wifi_state"], "WIFI_CONNECTED")
+        self.assertEqual(state["wifi_error"], "")
         self.assertEqual(state["last_frame_age_s"], 12)
         self.assertIn(state["ui_state"], {
             "BOOTING", "READY", "RECEIVING_FRAME", "DISPLAYING_FRAME",
@@ -367,6 +396,38 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             "format": "4bpp",
         })
         self.assertEqual(status["transfer"]["method"], "raw-serial")
+        self.assertEqual(status["transfer"]["bytes"], card_daemon.FRAME_BYTES)
+        self.assertEqual(status["result"], "ok")
+
+    def test_render_and_push_uses_full_http_frame_for_paper_s3_wifi(self):
+        fake = FakeWiFiTransport()
+        card_daemon.TRANSPORT = fake
+        card_daemon.REQUESTED_PROFILE = "paper-s3"
+        card_daemon.DEVICE_TELEMETRY.update({
+            "device": "M5Stack PaperS3",
+            "firmware": "0.10.8-paper-s3-frame",
+            "frame_state": "ready",
+        })
+        with card_daemon.WIDGET_LOCK:
+            card_daemon.WIDGET_CACHE["full"] = {
+                "type": "scratch",
+                "data": {"title": "Desk Note", "text": "PaperS3 Wi-Fi frame"},
+                "theme": "",
+                "ttl": 0,
+                "stale_after": 0,
+                "written_at": time.time(),
+            }
+
+        card_daemon.render_and_push()
+
+        status = card_daemon._frame_status_snapshot()
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0]["bytes"], card_daemon.FRAME_BYTES)
+        self.assertIsNone(fake.calls[0]["region"])
+        self.assertIsInstance(fake.calls[0]["fid"], int)
+        self.assertIsInstance(fake.calls[0]["crc"], int)
+        self.assertEqual(status["transfer"]["method"], "http")
+        self.assertEqual(status["transfer"]["target"], "wifi")
         self.assertEqual(status["transfer"]["bytes"], card_daemon.FRAME_BYTES)
         self.assertEqual(status["result"], "ok")
 

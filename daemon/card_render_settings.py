@@ -170,7 +170,18 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
             frame_line = "—"
         else:
             frame_line = f"{last_age}s ago · {state.get('last_frame_time', '—')}"
+        wifi_line = state.get("wifi_state") or (
+            "WIFI_CONNECTED" if state.get("wifi_connected") else "WIFI_DISABLED"
+        )
+        wifi_ip = state.get("wifi_ip") or state.get("ip") or ""
+        wifi_rssi = state.get("wifi_rssi")
+        if wifi_ip:
+            wifi_line = f"{wifi_line} · {wifi_ip}"
+        if isinstance(wifi_rssi, int) and wifi_rssi != -127:
+            wifi_line = f"{wifi_line} · {wifi_rssi} dBm"
         y = _kv_row(d, PADDING, y, w, "IP", state.get("ip", "—"))
+        y = _kv_row(d, PADDING, y, w, "Wi-Fi", wifi_line)
+        y = _kv_row(d, PADDING, y, w, "Wi-Fi err", state.get("wifi_error") or "—")
         y = _kv_row(d, PADDING, y, w, "最近帧", frame_line)
         y = _kv_row(d, PADDING, y, w, "Frame RX", state.get("frame_state", "—"))
         y = _kv_row(d, PADDING, y, w, "错误", state.get("last_error") or "—")

@@ -25,6 +25,30 @@ class DiagnoseDeviceTest(unittest.TestCase):
         self.assertIn("[frame]", advice["daemon_log_patterns"])
         self.assertIn("[touch]", advice["device_log_patterns"])
 
+    def test_paper_s3_wifi_advice_uses_explicit_host_when_provided(self):
+        import diagnose_device
+        import card_profiles
+
+        profile = card_profiles.get_profile("paper-s3")
+        advice = diagnose_device.build_advice(
+            profile,
+            root=ROOT,
+            transport="wifi",
+            host="192.0.2.44",
+            wifi_port=9898,
+            http_host="0.0.0.0",
+        )
+
+        self.assertIn("--transport", advice["daemon_command"])
+        self.assertIn("wifi", advice["daemon_command"])
+        self.assertIn("--host", advice["daemon_command"])
+        self.assertIn("192.0.2.44", advice["daemon_command"])
+        self.assertIn("--wifi-port", advice["daemon_command"])
+        self.assertIn("9898", advice["daemon_command"])
+        self.assertIn("--http-host", advice["daemon_command"])
+        self.assertIn("0.0.0.0", advice["daemon_command"])
+        self.assertIn("[wifi]", advice["daemon_log_patterns"])
+
 
 if __name__ == "__main__":
     unittest.main()

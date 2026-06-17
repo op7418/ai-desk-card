@@ -89,8 +89,9 @@ The Skill supports these device profiles:
 
 - **M5Paper V1.1** (540×960 grayscale, GT911 touch, BLE pair) — original
 - **M5Stack PaperS3** (logical 540×960 grayscale, GT911 touch) — `paper-s3`
-  profile. Current recommended transport is USB serial raw full-frame push.
-  BLE, deep sleep, and battery policy are not implemented for PaperS3 yet.
+  profile. Current recommended transport is Wi-Fi HTTP full-frame push after
+  USB serial provisioning. USB serial remains the setup/fallback path. BLE,
+  deep sleep, and battery policy are not implemented for PaperS3 yet.
 - **M5Paper Color** (600×400 Spectra 6 color, 3 physical buttons, audio + SHT40) — new in v0.10
 
 Profile selection rules:
@@ -121,8 +122,10 @@ For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body (@{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json)
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
-.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 ```
 
 The PaperS3 firmware may show its touch calibration/test screen after
@@ -143,7 +146,8 @@ re-probe.
 | Condition | Next action | Detail flow |
 |---|---|---|
 | `firmware.flashed == false` AND no `device.alive` | First-time hardware setup | [flows/01_install.md](flows/01_install.md) |
-| `daemon.running == false` and profile is `paper-s3` | Start PaperS3 daemon | `python daemon/card_daemon.py --profile paper-s3 --transport serial --port <COM port>` |
+| `daemon.running == false` and profile is `paper-s3` and Wi-Fi IP is known | Start PaperS3 Wi-Fi daemon | `python daemon/card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0` |
+| `daemon.running == false` and profile is `paper-s3` before Wi-Fi provisioning | Start PaperS3 serial daemon | `python daemon/card_daemon.py --profile paper-s3 --transport serial --port <COM port>` |
 | `daemon.running == false` | Start the daemon | `bash $SKILL_DIR/plugin/scripts/start.sh` |
 | `device.alive == false` AND `transport.connected == false` | Device unreachable — could be asleep, off, BLE not paired. Tell user, suggest physical wake (tap rotary / plug USB) | [flows/02_transport.md](flows/02_transport.md) |
 | `device.alive == false` AND `transport.connected == true` (daemon connected something but no status_report in 90s) | Device transport up but not responding — restart daemon, then probe | [flows/02_transport.md](flows/02_transport.md) |
@@ -215,14 +219,15 @@ The Skill provides the *what* (interests + push) — your agent provides the
   — … °. Use the safe glyph set documented in
   [plugin/skills/card-widget/SKILL.md](plugin/skills/card-widget/SKILL.md).
 - **M5Paper V1.1:** Wi-Fi preferred over USB / BLE. 0.2 s vs 1–32 s vs broken.
-- **PaperS3:** USB serial is the stable Phase 6 transport. Do not claim
+- **PaperS3:** Wi-Fi HTTP is the Phase 7 transport after serial
+  provisioning. USB serial remains the setup/fallback path. Do not claim
   BLE, deep sleep, or battery policy support for PaperS3.
 
 ## Hardware: what the user needs
 
 - M5Paper V1.1 (~¥600 / $90) — primary target
-- M5Stack PaperS3 — supported via `paper-s3` for build/upload/USB serial
-  daemon/widget workflows
+- M5Stack PaperS3 — supported via `paper-s3` for build/upload/Wi-Fi or USB
+  serial daemon/widget workflows
 - USB-C data cable (one time, for flashing)
 - Optional: USB-C charger for always-on Wi-Fi mode
 
