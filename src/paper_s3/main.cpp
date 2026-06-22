@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <esp_mac.h>
+#include <esp_sleep.h>
 #include <string.h>
 
 #include "paper_s3_http_server.h"
@@ -24,6 +25,7 @@ namespace {
 char g_macStr[18] = "00:00:00:00:00:00";
 char g_lineBuf[8192];
 size_t g_lineLen = 0;
+const char* g_lastWakeReason = "boot";
 
 struct TouchChip {
     int16_t x = 0;
@@ -71,6 +73,28 @@ void stopMDNS() {
     Serial.println("[mdns] stopped");
 }
 
+const char* wakeReasonName() {
+    switch (esp_sleep_get_wakeup_cause()) {
+        case ESP_SLEEP_WAKEUP_TIMER: return "timer";
+        case ESP_SLEEP_WAKEUP_TOUCHPAD: return "touch";
+        case ESP_SLEEP_WAKEUP_EXT0:
+        case ESP_SLEEP_WAKEUP_EXT1: return "button";
+        case ESP_SLEEP_WAKEUP_GPIO: return "gpio";
+        case ESP_SLEEP_WAKEUP_UART: return "usb";
+        default: return "boot";
+    }
+}
+
+void setNullableBool(JsonDocument& doc, const char* key, int8_t value) {
+    if (value > 0) {
+        doc[key] = true;
+    } else if (value == 0) {
+        doc[key] = false;
+    } else {
+        doc[key] = nullptr;
+    }
+}
+
 void emitStatusReport() {
     const paper_s3::PowerState power = paper_s3::readPower();
     JsonDocument doc;
@@ -82,8 +106,14 @@ void emitStatusReport() {
     doc["uptime_s"] = millis() / 1000UL;
     doc["battery_pct"] = power.batteryPercent;
     doc["battery_mv"] = power.batteryMillivolts;
-    doc["on_usb"] = power.usbPresent;
-    doc["charging"] = power.charging;
+    doc["vbus_mv"] = power.vbusMillivolts;
+    doc["power_source"] = power.source;
+    doc["power_mode"] = "always-on";
+    doc["deep_sleep_enabled"] = false;
+    doc["wake_reason"] = g_lastWakeReason;
+    doc["last_power_read_ms"] = power.lastReadMs;
+    setNullableBool(doc, "on_usb", power.usbPresent);
+    setNullableBool(doc, "charging", power.charging);
     doc["wifi_connected"] = wifiConnected();
     doc["wifi_ssid"] = wifiMaskedSSID();
     doc["wifi_ip"] = wifiIPStr();
@@ -312,10 +342,16 @@ void logBootSummary() {
                   paper_s3_frame::kFrameWidth,
                   paper_s3_frame::kFrameHeight,
                   (unsigned)paper_s3_frame::kFrameBytes4bpp);
-    Serial.printf("[power] usb=%s charging=%s battery=%ld%% battery_mv=%d\n",
-                  power.usbPresent ? "yes" : "no",
-                  power.charging ? "yes" : "no",
-                  (long)power.batteryPercent, (int)power.batteryMillivolts);
+    const char* usbState = power.usbPresent > 0
+        ? "yes"
+        : (power.usbPresent == 0 ? "no" : "unknown");
+    const char* chargingState = power.charging > 0
+        ? "yes"
+        : (power.charging == 0 ? "no" : "unknown");
+    Serial.printf("[power] source=%s usb=%s charging=%s battery=%ld%% battery_mv=%d vbus_mv=%d mode=always-on wake=%s\n",
+                  power.source, usbState, chargingState,
+                  (long)power.batteryPercent, (int)power.batteryMillivolts,
+                  (int)power.vbusMillivolts, g_lastWakeReason);
     Serial.printf("[net] wifi state=%s ssid=%s ip=%s rssi=%d error=%s\n",
                   wifiStateName(),
                   wifiMaskedSSID()[0] ? wifiMaskedSSID() : "(none)",
@@ -323,7 +359,7 @@ void logBootSummary() {
                   wifiRSSI(),
                   wifiLastError()[0] ? wifiLastError() : "none");
     Serial.println("[feature] BLE disabled");
-    Serial.println("[feature] deep sleep disabled");
+    Serial.println("[feature] deep sleep unsupported for paper-s3 (sleep-card only)");
 }
 
 void pollTouchAndEmit() {
@@ -437,6 +473,7 @@ void setup() {
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getPsramSize());
     Serial.flush();
 
+    g_lastWakeReason = wakeReasonName();
     paper_s3::begin();
     Serial.println("[probe] M5.begin returned");
     Serial.flush();

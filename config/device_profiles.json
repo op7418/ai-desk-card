@@ -19,6 +19,20 @@
         "ble": true,
         "deep_sleep": true,
         "battery_policy": true
+      },
+      "power": {
+        "default_mode": "always-on",
+        "supported_modes": ["always-on", "sleep-card", "deep-sleep"],
+        "idle_timeout_minutes": 0,
+        "wake_sources": ["touch", "rtc-timer", "usb-power", "ble-wake"],
+        "wake_recovery": "device boots and daemon repushes the current frame",
+        "deep_sleep": {
+          "enabled": true,
+          "status": "supported"
+        },
+        "ble": {
+          "status": "supported"
+        }
       }
     },
     "paper-s3": {
@@ -44,7 +58,24 @@
         "widgets": true,
         "ble": false,
         "deep_sleep": false,
-        "battery_policy": false
+        "battery_policy": true
+      },
+      "power": {
+        "default_mode": "always-on",
+        "supported_modes": ["always-on", "idle-low-power", "sleep-card"],
+        "idle_timeout_minutes": 0,
+        "wake_sources": ["touch-while-awake", "usb-reset", "power-key-reset"],
+        "wake_recovery": "daemon repushes a fresh frame after the device reports status",
+        "deep_sleep": {
+          "enabled": false,
+          "status": "unsupported",
+          "enable_flag": "PAPERS3_ENABLE_DEEP_SLEEP",
+          "reason": "not enabled until wake source and Wi-Fi recovery are verified on hardware"
+        },
+        "ble": {
+          "status": "unsupported",
+          "reason": "M5Paper V1.1 BLE exists, but PaperS3 BLE is not wired into this profile"
+        }
       }
     }
   }

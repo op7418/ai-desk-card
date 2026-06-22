@@ -1,12 +1,12 @@
 ---
-description: Push the name-card sleep frame + put the device into deep sleep.
+description: Push the name-card sleep frame; V1.1 deep-sleeps, PaperS3 shows sleep-card only.
 ---
 
 Renders `ai-desk-card/assets/profile.yaml` into a 540×960 e-ink frame
-(avatar / name / bio / tags / QR), pushes it to the device, then commands
-the device into ESP32 deep sleep. e-ink retains the last frame at zero
-power, so the user sees their name card until they power-cycle the
-device.
+(avatar / name / bio / tags / QR) and pushes it to the device. On M5Paper
+V1.1, the daemon then commands ESP32 deep sleep, so e-ink retains the last
+frame at near-zero power. On PaperS3, this command displays the sleep-card
+frame only; PaperS3 deep sleep is not enabled.
 
 Edit `ai-desk-card/assets/profile.yaml` directly if the user wants to
 update their card content. Drop a custom `assets/avatar.png` and/or

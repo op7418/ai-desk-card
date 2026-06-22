@@ -12,8 +12,11 @@ constexpr int32_t kLogicalFrameHeight = 960;
 struct PowerState {
     int32_t batteryPercent = -1;
     int16_t batteryMillivolts = -1;
-    bool charging = false;
-    bool usbPresent = false;
+    int16_t vbusMillivolts = -1;
+    int8_t charging = -1;
+    int8_t usbPresent = -1;
+    uint32_t lastReadMs = 0;
+    const char* source = "unknown";
 };
 
 struct TouchState {

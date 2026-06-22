@@ -49,6 +49,34 @@ class DiagnoseDeviceTest(unittest.TestCase):
         self.assertIn("0.0.0.0", advice["daemon_command"])
         self.assertIn("[wifi]", advice["daemon_log_patterns"])
 
+    def test_paper_s3_power_section_reports_conservative_defaults(self):
+        import diagnose_device
+        import card_profiles
+
+        profile = card_profiles.get_profile("paper-s3")
+        section = diagnose_device.build_power_section(
+            profile,
+            frame_status={"power": {"mode": "always-on"}},
+            device_status={
+                "battery_pct": 73,
+                "battery_mv": 4010,
+                "on_usb": None,
+                "charging": True,
+                "power_source": "unknown",
+                "wake_reason": "boot",
+            },
+        )
+
+        self.assertEqual(section["power_mode"], "always-on")
+        self.assertEqual(section["power_source"], "unknown")
+        self.assertEqual(section["battery_pct"], 73)
+        self.assertEqual(section["battery_mv"], 4010)
+        self.assertEqual(section["charging"], True)
+        self.assertFalse(section["deep_sleep_enabled"])
+        self.assertEqual(section["deep_sleep_status"], "unsupported")
+        self.assertEqual(section["ble_status"], "unsupported")
+        self.assertEqual(section["last_wake_reason"], "boot")
+
 
 if __name__ == "__main__":
     unittest.main()

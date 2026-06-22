@@ -362,6 +362,86 @@ class CardDaemonPaperS3RawTest(unittest.TestCase):
             "ERROR", "STATUS",
         })
 
+    def test_settings_state_exposes_paper_s3_power_fields(self):
+        card_daemon.REQUESTED_PROFILE = "paper-s3"
+        card_daemon.DEVICE_TELEMETRY.update({
+            "device": "M5Stack PaperS3",
+            "firmware": "0.10.7-paper-s3-frame",
+            "battery_pct": 73,
+            "battery_mv": 4010,
+            "vbus_mv": -1,
+            "on_usb": None,
+            "charging": True,
+            "power_source": "unknown",
+            "last_power_read_ms": 12345,
+            "wake_reason": "boot",
+        })
+
+        state = card_daemon._settings_state()
+
+        self.assertEqual(state["power_mode"], "always-on")
+        self.assertEqual(state["power_source"], "unknown")
+        self.assertEqual(state["battery_pct"], 73)
+        self.assertEqual(state["battery_mv"], 4010)
+        self.assertEqual(state["charging"], True)
+        self.assertEqual(state["last_power_read_ms"], 12345)
+        self.assertEqual(state["last_wake_reason"], "boot")
+        self.assertFalse(state["deep_sleep_enabled"])
+        self.assertEqual(state["deep_sleep_status"], "unsupported")
+
+    def test_paper_s3_sleep_action_pushes_card_without_deep_sleep_command(self):
+        fake = FakeWiFiTransport()
+        card_daemon.TRANSPORT = fake
+        card_daemon.REQUESTED_PROFILE = "paper-s3"
+        old_render_sleep = card_daemon.render_and_push_sleep
+        card_daemon.render_and_push_sleep = lambda: True
+        try:
+            result = card_daemon._internal_dispatch("sleep")
+        finally:
+            card_daemon.render_and_push_sleep = old_render_sleep
+
+        self.assertEqual(result["action"], "sleep")
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["mode"], "sleep-card")
+        self.assertFalse(result["deep_sleep"])
+        self.assertEqual(fake.commands, [])
+
+    def test_paper_s3_sleep_card_profile_contains_power_status(self):
+        card_daemon.REQUESTED_PROFILE = "paper-s3"
+        card_daemon.DEVICE_TELEMETRY.update({
+            "battery_pct": 73,
+            "on_usb": True,
+            "power_source": "usb",
+        })
+        card_daemon._FRAME_LAST_PUSH = 1718688000.0
+
+        profile = card_daemon._sleep_card_profile_for_selected_device()
+
+        self.assertEqual(profile["name"], "Device sleeping")
+        joined = "\n".join(profile["bio_lines"])
+        self.assertIn("profile: paper-s3", joined)
+        self.assertIn("last update:", joined)
+        self.assertIn("battery: 73% / USB", joined)
+        self.assertIn("wake: tap Refresh or restart daemon to repaint", joined)
+
+    def test_m5paper_sleep_action_still_sends_deep_sleep_command(self):
+        fake = FakeRawSerialTransport()
+        card_daemon.TRANSPORT = fake
+        card_daemon.REQUESTED_PROFILE = "m5paper-v1.1"
+        old_render_sleep = card_daemon.render_and_push_sleep
+        card_daemon.render_and_push_sleep = lambda: True
+        try:
+            result = card_daemon._internal_dispatch("sleep")
+        finally:
+            card_daemon.render_and_push_sleep = old_render_sleep
+
+        commands = [
+            json.loads(line.decode("utf-8").strip())
+            for line in fake.json_lines
+        ]
+        self.assertEqual(result["command"], "sleep_now")
+        self.assertIn({"cmd": "sleep_now", "wake_after_sec": 0}, commands)
+
     def test_render_and_push_records_real_widget_frame_status(self):
         fake = FakeRawSerialTransport()
         card_daemon.TRANSPORT = fake

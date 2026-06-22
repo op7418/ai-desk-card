@@ -313,20 +313,9 @@ class WiFiTransport(Transport):
             return False
 
     def connected(self) -> bool:
-        # v0.9: don't sticky-false on a single timed-out cmd. If our cached
-        # flag is False, do a quick TCP probe (~0.5s) and re-flip on
-        # success — otherwise a single failed cmd:sleep_now would lock the
-        # transport out, even after the device rebooted and is fully
-        # reachable on /frame again.
-        if self._connect_ok:
-            return True
-        try:
-            import socket
-            with socket.create_connection((self.ip, self.port), timeout=0.5):
-                self._connect_ok = True
-                return True
-        except Exception:
-            return False
+        # Keep this deterministic: a failed HTTP frame/command marks the
+        # transport disconnected until a later HTTP frame/command succeeds.
+        return self._connect_ok
 
 
 class BLETransport(Transport):
@@ -470,7 +459,14 @@ def _telemetry_listener(line: str):
         "mac":             "mac",
         "battery_pct":     "battery_pct",
         "battery_mv":      "battery_mv",
+        "vbus_mv":         "vbus_mv",
         "on_usb":          "on_usb",
+        "charging":        "charging",
+        "power_source":    "power_source",
+        "power_mode":      "power_mode",
+        "deep_sleep_enabled": "deep_sleep_enabled",
+        "wake_reason":     "wake_reason",
+        "last_power_read_ms": "last_power_read_ms",
         "wifi_connected":  "wifi_connected",
         "wifi_ssid":       "wifi_ssid",
         "wifi_ip":         "wifi_ip",
@@ -564,9 +560,9 @@ def _dispatch_touch_action(action: str):
     if _FRAME_LOCK.locked():
         return _action_result(action, False, "busy", state=UI_STATE)
     if action == "sleep":
-        # Sleep renders and pushes a full frame before sending sleep_now.
-        # Do it off the serial reader thread so raw-frame ack lines can be
-        # read while the push waits for them.
+        # Sleep renders and pushes a full frame before any optional follow-up
+        # command. Do it off the serial reader thread so raw-frame ack lines
+        # can be read while the push waits for them.
         threading.Thread(target=_internal_dispatch, args=(action,), daemon=True).start()
         return _action_result(action, True, "async", state=UI_STATE)
     return _internal_dispatch(action)
@@ -954,10 +950,49 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None) -> bool:
         return True
 
 
+def _sleep_card_profile_for_selected_device() -> dict:
+    if _selected_profile_label() != "paper-s3":
+        return {}
+    power = _power_status()
+    if _FRAME_LAST_PUSH > 0:
+        last_update = datetime.fromtimestamp(
+            _FRAME_LAST_PUSH
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        last_update = "unknown"
+    battery = "unknown"
+    if power.get("battery_pct") is not None:
+        battery = f"{power.get('battery_pct')}%"
+    source = "USB" if power.get("on_usb") is True else (
+        "battery" if power.get("on_usb") is False else power.get("power_source")
+    )
+    if source:
+        battery = f"{battery} / {source}"
+    return {
+        "name": "Device sleeping",
+        "tagline": "PaperS3 sleep card",
+        "bio_lines": [
+            "profile: paper-s3",
+            f"last update: {last_update}",
+            f"battery: {battery}",
+            "wake: tap Refresh or restart daemon to repaint",
+            "deep sleep: unsupported",
+        ],
+        "tags": [
+            {"icon": "Mode", "text": power.get("mode") or "always-on"},
+            {"icon": "Wake", "text": power.get("last_wake_reason") or "unknown"},
+        ],
+        "qr_label": "",
+        "footer": "ai-desk-card / sleep-card",
+    }
+
+
 def render_and_push_sleep():
-    """Render the sleep-frame name card and push it. Caller is expected to
-    follow up with send_line({cmd:sleep_now}) so the device enters deep
-    sleep with the last frame on the panel."""
+    """Render the sleep-frame name card and push it.
+
+    Callers decide whether the selected profile should receive a follow-up
+    sleep command. PaperS3 intentionally stops at the sleep-card frame.
+    """
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render_sleep
@@ -971,7 +1006,9 @@ def render_and_push_sleep():
         log(f"[sleep] import fail: {e!r}")
         return False
     try:
-        profile = card_render_sleep.load_profile()
+        profile = _sleep_card_profile_for_selected_device()
+        if not profile:
+            profile = card_render_sleep.load_profile()
         img = card_render_sleep.render_sleep_frame(profile)
         packed = card_render.to_4bpp_packed(img)
     except Exception as e:
@@ -1016,6 +1053,50 @@ def _device_alive(threshold_s: float = 90.0) -> bool:
     return _device_seen_seconds_ago() <= threshold_s
 
 
+def _power_config(profile: "dict | None" = None) -> dict:
+    profile = profile or _selected_profile()
+    config = profile.get("power") or {}
+    return config if isinstance(config, dict) else {}
+
+
+def _power_status(profile: "dict | None" = None) -> dict:
+    """Merge profile power policy with the latest firmware telemetry."""
+    profile = profile or _selected_profile()
+    config = _power_config(profile)
+    deep_sleep = config.get("deep_sleep") or {}
+    ble = config.get("ble") or {}
+    return {
+        "mode": DEVICE_TELEMETRY.get("power_mode")
+                or config.get("default_mode")
+                or "always-on",
+        "supported_modes": list(config.get("supported_modes") or ["always-on"]),
+        "idle_timeout_minutes": int(config.get("idle_timeout_minutes") or 0),
+        "battery_pct": DEVICE_TELEMETRY.get("battery_pct"),
+        "battery_mv": DEVICE_TELEMETRY.get("battery_mv"),
+        "vbus_mv": DEVICE_TELEMETRY.get("vbus_mv"),
+        "on_usb": DEVICE_TELEMETRY.get("on_usb"),
+        "charging": DEVICE_TELEMETRY.get("charging"),
+        "power_source": DEVICE_TELEMETRY.get("power_source") or "unknown",
+        "last_power_read_ms": DEVICE_TELEMETRY.get("last_power_read_ms"),
+        "deep_sleep_enabled": bool(deep_sleep.get("enabled")),
+        "deep_sleep_status": str(deep_sleep.get("status") or "unsupported"),
+        "ble_status": str(ble.get("status") or "unsupported"),
+        "wake_sources": list(config.get("wake_sources") or []),
+        "last_wake_reason": DEVICE_TELEMETRY.get("wake_reason") or "unknown",
+        "last_wake_recovery": DEVICE_TELEMETRY.get("wake_recovery")
+                              or config.get("wake_recovery")
+                              or "unknown",
+    }
+
+
+def _deep_sleep_enabled_for_selected_profile() -> bool:
+    power = _power_status()
+    return (
+        bool(power.get("deep_sleep_enabled"))
+        and power.get("deep_sleep_status") != "unsupported"
+    )
+
+
 def _bar_status() -> dict:
     """Build the bottom-bar status payload at render time."""
     age = None
@@ -1049,6 +1130,17 @@ def _settings_state() -> dict:
     state["ui_state"] = UI_STATE
     state["last_error"] = UI_LAST_ERROR
     state["firmware_profile"] = profile["name"]
+    power = _power_status(profile)
+    state["power_mode"] = power["mode"]
+    state["power_source"] = power["power_source"]
+    state["vbus_mv"] = power["vbus_mv"]
+    state["last_power_read_ms"] = power["last_power_read_ms"]
+    state["deep_sleep_enabled"] = power["deep_sleep_enabled"]
+    state["deep_sleep_status"] = power["deep_sleep_status"]
+    state["ble_status"] = power["ble_status"]
+    state["wake_sources"] = power["wake_sources"]
+    state["last_wake_reason"] = power["last_wake_reason"]
+    state["last_wake_recovery"] = power["last_wake_recovery"]
     state["ip"] = state.get("wifi_ip") or "—"
     if _FRAME_LAST_PUSH > 0:
         state["last_frame_age_s"] = int(time.time() - _FRAME_LAST_PUSH)
@@ -1172,6 +1264,7 @@ def _frame_status_snapshot() -> dict:
     status["wifi_state"] = DEVICE_TELEMETRY.get("wifi_state")
     status["wifi_error"] = DEVICE_TELEMETRY.get("wifi_error")
     status["wifi_ip"] = DEVICE_TELEMETRY.get("wifi_ip")
+    status["power"] = _power_status()
     return status
 
 
@@ -1515,12 +1608,24 @@ class CardHandler(BaseHTTPRequestHandler):
         except BrokenPipeError: pass
 
     def _handle_sleep_post(self, payload: dict):
-        """Render name card → push → tell device to deep-sleep."""
+        """Render name card, push it, then deep-sleep only if profile supports it."""
         if not (TRANSPORT and TRANSPORT.connected()):
             return self._reply(503, {"error": "device not connected"})
         ok = render_and_push_sleep()
         if not ok:
             return self._reply(500, {"error": "render or push failed"})
+        if not _deep_sleep_enabled_for_selected_profile():
+            power = _power_status()
+            log("[sleep] sleep card pushed; deep sleep skipped "
+                f"profile={_selected_profile_label()} "
+                f"status={power.get('deep_sleep_status')}")
+            return self._reply(200, {
+                "ok": True,
+                "mode": "sleep-card",
+                "deep_sleep": False,
+                "deep_sleep_status": power.get("deep_sleep_status"),
+                "note": "sleep card displayed; deep sleep is not enabled for this profile",
+            })
         # Tell device to enter deep sleep. Optional "wake_after_sec" in the
         # payload (currently unused on firmware side; reserved for v0.7+).
         wake_after = int(payload.get("wake_after_sec") or 0)
@@ -1570,6 +1675,11 @@ class CardHandler(BaseHTTPRequestHandler):
                 "transport_picked":   type(TRANSPORT).__name__ if TRANSPORT else None,
                 "transport_connected": TRANSPORT is not None and TRANSPORT.connected(),
                 "battery_pct":        DEVICE_TELEMETRY.get("battery_pct"),
+                "battery_mv":         DEVICE_TELEMETRY.get("battery_mv"),
+                "vbus_mv":            DEVICE_TELEMETRY.get("vbus_mv"),
+                "on_usb":             DEVICE_TELEMETRY.get("on_usb"),
+                "charging":           DEVICE_TELEMETRY.get("charging"),
+                "power":              _power_status(profile),
                 "uptime":             DEVICE_TELEMETRY.get("uptime"),
                 "firmware":           DEVICE_TELEMETRY.get("firmware"),
                 "selected_profile":   profile["name"],
@@ -1647,9 +1757,8 @@ class CardHandler(BaseHTTPRequestHandler):
 
         if path == "/sleep":
             # Render the name-card sleep frame from assets/profile.yaml,
-            # push it as a regular frame_chunk frame, then send cmd:sleep_now
-            # so the firmware enters deep_sleep (e-ink retains the last
-            # frame at 0 W).
+            # push it as a regular frame, and let the selected profile decide
+            # whether a follow-up cmd:sleep_now is supported.
             return self._handle_sleep_post(payload)
 
         if path == "/refresh":
@@ -1688,9 +1797,11 @@ class CardHandler(BaseHTTPRequestHandler):
                 # Pass through Wi-Fi fields too — firmware sends them as
                 # top-level keys (wifi_connected, wifi_ip, wifi_ssid, wifi_rssi).
                 for k in ("wifi_connected", "wifi_ssid", "wifi_ip", "wifi_rssi",
-                          "wifi_state", "wifi_error", "on_usb"):
+                          "wifi_state", "wifi_error", "on_usb", "charging",
+                          "device", "fw", "power_source", "power_mode", "deep_sleep_enabled",
+                          "wake_reason", "last_power_read_ms", "vbus_mv"):
                     if k in payload:
-                        DEVICE_TELEMETRY[k] = payload[k]
+                        DEVICE_TELEMETRY["firmware" if k == "fw" else k] = payload[k]
                 if "battery_pct" in payload: DEVICE_TELEMETRY["battery_pct"] = int(payload["battery_pct"])
                 if "battery_mv"  in payload: DEVICE_TELEMETRY["battery_mv"]  = int(payload["battery_mv"])
                 if "firmware"    in payload: DEVICE_TELEMETRY["firmware"]    = str(payload["firmware"])[:32]
@@ -1830,6 +1941,17 @@ def _internal_dispatch(action: str) -> dict:
         return _action_result(action, True, frame_request="scheduled")
     if action == "sleep":
         if render_and_push_sleep():
+            if not _deep_sleep_enabled_for_selected_profile():
+                power = _power_status()
+                log("[sleep] sleep card pushed; deep sleep skipped "
+                    f"profile={_selected_profile_label()} "
+                    f"status={power.get('deep_sleep_status')}")
+                return _action_result(
+                    action, True, "sleep-card-only",
+                    mode="sleep-card",
+                    deep_sleep=False,
+                    deep_sleep_status=power.get("deep_sleep_status"),
+                )
             send_line({"cmd": "sleep_now", "wake_after_sec": 0})
             return _action_result(action, True, command="sleep_now")
         return _action_result(action, False, "sleep-render-failed")
@@ -1896,8 +2018,8 @@ def _read_quiet_hours() -> "dict | None":
 
 def _quiet_hours_loop():
     """Background watcher: when wall-clock crosses interests.yaml's
-    quiet_hours.start, push the business-card frame + put the device to
-    deep sleep. Fires at most once per calendar day."""
+    quiet_hours.start, push the business-card frame and use the selected
+    profile's sleep behavior. Fires at most once per calendar day."""
     last_fired_date = ""
     while True:
         time.sleep(45)   # cheap enough; resolution well within the 1-min start

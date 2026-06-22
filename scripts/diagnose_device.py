@@ -74,6 +74,83 @@ def build_advice(profile: dict, *, root: str = ROOT,
     }
 
 
+def _first_present(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def build_power_section(profile: dict, *,
+                        frame_status: dict | None = None,
+                        device_status: dict | None = None) -> dict:
+    frame_status = frame_status or {}
+    device_status = device_status or {}
+    profile_power = profile.get("power") or {}
+    frame_power = frame_status.get("power") or {}
+    device_power = device_status.get("power") or {}
+    deep_sleep = profile_power.get("deep_sleep") or {}
+    ble = profile_power.get("ble") or {}
+
+    return {
+        "power_mode": _first_present(
+            frame_power.get("mode"),
+            device_power.get("mode"),
+            device_status.get("power_mode"),
+            profile_power.get("default_mode"),
+            "always-on",
+        ),
+        "supported_modes": list(profile_power.get("supported_modes") or ["always-on"]),
+        "idle_timeout_minutes": int(profile_power.get("idle_timeout_minutes") or 0),
+        "power_source": _first_present(
+            frame_power.get("power_source"),
+            device_power.get("source"),
+            device_status.get("power_source"),
+            "unknown",
+        ),
+        "battery_pct": _first_present(
+            frame_power.get("battery_pct"),
+            device_power.get("battery_pct"),
+            device_status.get("battery_pct"),
+        ),
+        "battery_mv": _first_present(
+            frame_power.get("battery_mv"),
+            device_power.get("battery_mv"),
+            device_status.get("battery_mv"),
+        ),
+        "vbus_mv": _first_present(
+            frame_power.get("vbus_mv"),
+            device_power.get("vbus_mv"),
+            device_status.get("vbus_mv"),
+        ),
+        "on_usb": _first_present(
+            frame_power.get("on_usb"),
+            device_power.get("on_usb"),
+            device_status.get("on_usb"),
+        ),
+        "charging": _first_present(
+            frame_power.get("charging"),
+            device_power.get("charging"),
+            device_status.get("charging"),
+        ),
+        "deep_sleep_enabled": bool(deep_sleep.get("enabled")),
+        "deep_sleep_status": str(deep_sleep.get("status") or "unsupported"),
+        "ble_status": str(ble.get("status") or "unsupported"),
+        "wake_sources": list(profile_power.get("wake_sources") or []),
+        "last_wake_reason": _first_present(
+            frame_power.get("last_wake_reason"),
+            device_power.get("wake_reason"),
+            device_status.get("wake_reason"),
+            "unknown",
+        ),
+        "last_wake_recovery": _first_present(
+            frame_power.get("last_wake_recovery"),
+            profile_power.get("wake_recovery"),
+            "unknown",
+        ),
+    }
+
+
 def _request_json(method: str, daemon_url: str, path: str,
                   payload: dict | None = None, timeout: float = 4.0) -> tuple[int, dict]:
     body = None
@@ -184,6 +261,7 @@ def run(args: argparse.Namespace) -> int:
     elif ports or args.port:
         _check("PASS", "serial port", args.port or ", ".join(ports))
 
+    device_status_payload = {}
     if profile["name"] == "paper-s3":
         if args.transport == "wifi":
             if not args.host:
@@ -199,6 +277,7 @@ def run(args: argparse.Namespace) -> int:
                             "check IP, LAN, firewall, and --wifi-port") and ok
                 code, device_status = _device_status(args.host, port)
                 if code == 200:
+                    device_status_payload = device_status
                     wifi = device_status.get("wifi") or {}
                     _check("PASS", "firmware /status",
                            f"wifi={wifi.get('state')} ip={wifi.get('ip')} rssi={wifi.get('rssi')} error={wifi.get('last_error') or 'none'}")
@@ -237,6 +316,20 @@ def run(args: argparse.Namespace) -> int:
                 _check("WARN", "latest Wi-Fi error", str(frame.get("wifi_error")))
             if frame.get("error"):
                 _check("WARN", "latest frame error", str(frame.get("error")))
+            power = build_power_section(
+                profile,
+                frame_status=frame,
+                device_status=device_status_payload,
+            )
+            print("[diagnose] power:")
+            print(f"[diagnose]   mode={power['power_mode']} source={power['power_source']} "
+                  f"on_usb={power['on_usb']} charging={power['charging']}")
+            print(f"[diagnose]   battery_pct={power['battery_pct']} "
+                  f"battery_mv={power['battery_mv']} vbus_mv={power['vbus_mv']}")
+            print(f"[diagnose]   deep_sleep={power['deep_sleep_status']} "
+                  f"enabled={power['deep_sleep_enabled']} ble={power['ble_status']}")
+            print(f"[diagnose]   wake_reason={power['last_wake_reason']} "
+                  f"wake_sources={','.join(power['wake_sources']) or 'none'}")
         if args.send_test and pair.get("connected"):
             demo = card_cli.demo_command(profile, args.test_widget)
             ok = _run_check(f"send {args.test_widget} card", demo, run=True) and ok

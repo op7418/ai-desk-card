@@ -185,6 +185,32 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
         y = _kv_row(d, PADDING, y, w, "最近帧", frame_line)
         y = _kv_row(d, PADDING, y, w, "Frame RX", state.get("frame_state", "—"))
         y = _kv_row(d, PADDING, y, w, "错误", state.get("last_error") or "—")
+        power_mode = state.get("power_mode") or "always-on"
+        power_source = state.get("power_source") or "unknown"
+        battery_parts = []
+        if state.get("battery_pct") is not None:
+            battery_parts.append(f"{state.get('battery_pct')}%")
+        if state.get("battery_mv") is not None:
+            battery_parts.append(f"{state.get('battery_mv')} mV")
+        if state.get("vbus_mv") is not None:
+            battery_parts.append(f"VBUS {state.get('vbus_mv')} mV")
+        battery_line = " / ".join(battery_parts) if battery_parts else "unknown"
+        usb_value = state.get("on_usb")
+        if usb_value is True:
+            usb_line = "USB"
+        elif usb_value is False:
+            usb_line = "battery"
+        else:
+            usb_line = "unknown"
+        charging = state.get("charging")
+        if charging is True:
+            usb_line += " / charging"
+        elif charging is False:
+            usb_line += " / not charging"
+        y = _kv_row(d, PADDING, y, w, "Power", f"{power_mode} / {power_source}")
+        y = _kv_row(d, PADDING, y, w, "Battery", battery_line)
+        y = _kv_row(d, PADDING, y, w, "USB", usb_line)
+        y = _kv_row(d, PADDING, y, w, "Wake", state.get("last_wake_reason") or "unknown")
     else:
         y = _kv_row(d, PADDING, y, w, "蓝牙",
                     "已配对" if state.get("ble_paired") else "未配对")
@@ -226,9 +252,21 @@ def render_settings_page(state: Optional[dict] = None) -> "Image.Image":
             ("●", "重新配对蓝牙",       "repair"),
             ("●", "清空所有组件",       "clear"),
         ]
-    for icon, label, aid in actions:
-        y = _action_button(d, PADDING, y, btn_w, btn_h, icon, label, aid)
-        y += 6 if is_paper_s3 else 8
+    if is_paper_s3:
+        col_gap = 12
+        col_w = (w - col_gap) // 2
+        row_top = y
+        for idx, (icon, label, aid) in enumerate(actions):
+            col = idx % 2
+            row = idx // 2
+            x_btn = PADDING + col * (col_w + col_gap)
+            y_btn = row_top + row * (btn_h + 8)
+            _action_button(d, x_btn, y_btn, col_w, btn_h, icon, label, aid)
+        y = row_top + ((len(actions) + 1) // 2) * (btn_h + 8)
+    else:
+        for icon, label, aid in actions:
+            y = _action_button(d, PADDING, y, btn_w, btn_h, icon, label, aid)
+            y += 8
 
     # ---- 底部提示 ----
     foot = "点击上方任一项执行  ·  左上 返回 退出"

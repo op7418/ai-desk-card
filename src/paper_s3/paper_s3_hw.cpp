@@ -187,11 +187,26 @@ int32_t displayHeight() {
 
 PowerState readPower() {
     PowerState state;
-    state.charging = M5.Power.isCharging();
+    const auto charging = M5.Power.isCharging();
+    if (charging == m5::Power_Class::is_charging) {
+        state.charging = 1;
+    } else if (charging == m5::Power_Class::is_discharging) {
+        state.charging = 0;
+    }
     state.batteryPercent = M5.Power.getBatteryLevel();
     state.batteryMillivolts = M5.Power.getBatteryVoltage();
-    // PaperS3 exposes charge status, not a separate VBUS-present reading.
-    state.usbPresent = state.charging;
+    state.vbusMillivolts = M5.Power.getVBUSVoltage();
+    state.lastReadMs = millis();
+    if (state.vbusMillivolts > 1000) {
+        state.usbPresent = 1;
+        state.source = "usb";
+    } else if (state.vbusMillivolts == 0) {
+        state.usbPresent = 0;
+        state.source = "battery";
+    } else {
+        state.usbPresent = -1;
+        state.source = "unknown";
+    }
     return state;
 }
 
@@ -266,9 +281,14 @@ void paintTestScreen(const char* firmwareVersion, const char* ipAddress) {
              (long)power.batteryPercent, (int)power.batteryMillivolts);
 
     char usbLine[64];
-    snprintf(usbLine, sizeof(usbLine), "USB inferred %s, charging %s",
-             power.usbPresent ? "present" : "absent",
-             power.charging ? "yes" : "no");
+    const char* usbState = power.usbPresent > 0
+        ? "present"
+        : (power.usbPresent == 0 ? "absent" : "unknown");
+    const char* chargingState = power.charging > 0
+        ? "yes"
+        : (power.charging == 0 ? "no" : "unknown");
+    snprintf(usbLine, sizeof(usbLine), "USB %s, charging %s",
+             usbState, chargingState);
 
     const int32_t top = 202;
     const int32_t colW = (w - 96) / 2;

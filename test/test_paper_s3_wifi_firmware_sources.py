@@ -44,6 +44,23 @@ class PaperS3WiFiFirmwareSourcesTest(unittest.TestCase):
         self.assertNotIn("\\\"wifi_ssid\\\":\\\"%s\\\"", main_cpp)
         self.assertNotIn("\\\"ack\\\":\\\"wifi_set\\\",\\\"ok\\\":true,\\\"ssid\\\":\\\"%s\\\"", main_cpp)
 
+    def test_paper_s3_firmware_exposes_stage8_power_fields(self):
+        main_cpp = self._read("src/paper_s3/main.cpp")
+        hw_cpp = self._read("src/paper_s3/paper_s3_hw.cpp")
+        http_cpp = self._read("src/paper_s3/paper_s3_http_server.cpp")
+
+        self.assertIn("getVBUSVoltage", hw_cpp)
+        for field in (
+            "vbus_mv",
+            "power_source",
+            "power_mode",
+            "deep_sleep_enabled",
+            "wake_reason",
+            "last_power_read_ms",
+        ):
+            self.assertIn(field, main_cpp)
+            self.assertIn(field, http_cpp)
+
 
 if __name__ == "__main__":
     unittest.main()

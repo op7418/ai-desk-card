@@ -2,7 +2,7 @@ import unittest
 
 
 class DeviceProfilesTest(unittest.TestCase):
-    def test_paper_s3_profile_has_required_phase7_fields(self):
+    def test_paper_s3_profile_has_required_stage8_fields(self):
         import card_profiles
 
         profile = card_profiles.get_profile("paper-s3")
@@ -21,8 +21,15 @@ class DeviceProfilesTest(unittest.TestCase):
             "widgets": True,
             "ble": False,
             "deep_sleep": False,
-            "battery_policy": False,
+            "battery_policy": True,
         })
+        self.assertEqual(profile["power"]["default_mode"], "always-on")
+        self.assertIn("idle-low-power", profile["power"]["supported_modes"])
+        self.assertIn("sleep-card", profile["power"]["supported_modes"])
+        self.assertEqual(profile["power"]["idle_timeout_minutes"], 0)
+        self.assertFalse(profile["power"]["deep_sleep"]["enabled"])
+        self.assertEqual(profile["power"]["deep_sleep"]["status"], "unsupported")
+        self.assertEqual(profile["power"]["ble"]["status"], "unsupported")
 
     def test_profile_aliases_keep_original_card_environment(self):
         import card_profiles

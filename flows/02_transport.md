@@ -37,9 +37,10 @@ kill it. Then retry step 1.
 
 ## Step 3 — BLE-only mode (battery-powered + no Wi-Fi)
 
-Skip this step for `paper-s3`: BLE standby, deep sleep, and battery policy
-are not implemented for PaperS3. For PaperS3 after Wi-Fi provisioning,
-restart the daemon with `--profile paper-s3 --transport wifi --host
+Skip this step for `paper-s3`: BLE standby and deep sleep are not implemented
+for PaperS3. PaperS3 uses an always-on Wi-Fi/USB path with power telemetry and
+sleep-card only. After Wi-Fi provisioning, restart the daemon with
+`--profile paper-s3 --transport wifi --host
 <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0`. Before Wi-Fi provisioning, close any serial
 monitor, use `--transport serial --port <COM port>`, then run
 `scripts/diagnose_device.py --profile paper-s3`.

@@ -23,7 +23,18 @@ class CollectPaperS3WiFiReportTest(unittest.TestCase):
                 "password": "should-not-appear",
             },
             "daemon": {"pair_status": {"connected": True}},
-            "frame": {"result": "failed", "error": "timeout"},
+            "frame": {
+                "result": "failed",
+                "error": "timeout",
+                "power": {
+                    "mode": "always-on",
+                    "power_source": "usb",
+                    "battery_pct": 73,
+                    "deep_sleep_status": "unsupported",
+                    "ble_status": "unsupported",
+                    "last_wake_reason": "boot",
+                },
+            },
         })
 
         self.assertIn("# PaperS3 Wi-Fi Diagnostic Report", text)
@@ -35,6 +46,13 @@ class CollectPaperS3WiFiReportTest(unittest.TestCase):
         self.assertNotIn("HomeSecret", text)
         self.assertNotIn("should-not-appear", text)
         self.assertIn("last frame result: failed", text)
+        self.assertIn("## Power", text)
+        self.assertIn("mode: always-on", text)
+        self.assertIn("source: usb", text)
+        self.assertIn("battery_pct: 73", text)
+        self.assertIn("deep_sleep: unsupported", text)
+        self.assertIn("BLE: unsupported", text)
+        self.assertIn("wake_reason: boot", text)
 
 
 if __name__ == "__main__":

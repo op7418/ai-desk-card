@@ -110,6 +110,26 @@ void rememberPeer(WiFiClient& c) {
              peer[0], peer[1], peer[2], peer[3]);
 }
 
+void setNullableBool(JsonDocument& doc, const char* key, int8_t value) {
+    if (value > 0) {
+        doc[key] = true;
+    } else if (value == 0) {
+        doc[key] = false;
+    } else {
+        doc[key] = nullptr;
+    }
+}
+
+void setNullableBool(JsonObject obj, const char* key, int8_t value) {
+    if (value > 0) {
+        obj[key] = true;
+    } else if (value == 0) {
+        obj[key] = false;
+    } else {
+        obj[key] = nullptr;
+    }
+}
+
 void handleStatus(WiFiClient& c) {
     const paper_s3::PowerState power = paper_s3::readPower();
     uint8_t mac[6] = {0};
@@ -126,8 +146,25 @@ void handleStatus(WiFiClient& c) {
     doc["uptime_s"] = millis() / 1000UL;
     doc["battery_pct"] = power.batteryPercent;
     doc["battery_mv"] = power.batteryMillivolts;
-    doc["on_usb"] = power.usbPresent;
-    doc["charging"] = power.charging;
+    doc["vbus_mv"] = power.vbusMillivolts;
+    doc["power_source"] = power.source;
+    doc["power_mode"] = "always-on";
+    doc["deep_sleep_enabled"] = false;
+    doc["wake_reason"] = "boot";
+    doc["last_power_read_ms"] = power.lastReadMs;
+    setNullableBool(doc, "on_usb", power.usbPresent);
+    setNullableBool(doc, "charging", power.charging);
+    JsonObject powerObj = doc["power"].to<JsonObject>();
+    powerObj["mode"] = "always-on";
+    powerObj["source"] = power.source;
+    powerObj["battery_pct"] = power.batteryPercent;
+    powerObj["battery_mv"] = power.batteryMillivolts;
+    powerObj["vbus_mv"] = power.vbusMillivolts;
+    powerObj["deep_sleep_enabled"] = false;
+    powerObj["wake_reason"] = "boot";
+    powerObj["last_power_read_ms"] = power.lastReadMs;
+    setNullableBool(powerObj, "on_usb", power.usbPresent);
+    setNullableBool(powerObj, "charging", power.charging);
     doc["frame_state"] = paper_s3_frame::stateName();
     JsonObject wifi = doc["wifi"].to<JsonObject>();
     wifi["state"] = wifiStateName();

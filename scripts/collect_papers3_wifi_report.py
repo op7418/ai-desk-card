@@ -81,6 +81,9 @@ def build_report(data: dict[str, Any]) -> str:
     wifi_status = _wifi_from_status(data.get("wifi_status") or data.get("device_status") or {})
     daemon = data.get("daemon") or {}
     frame = data.get("frame") or {}
+    device_status = data.get("device_status") or {}
+    frame_power = frame.get("power") if isinstance(frame.get("power"), dict) else {}
+    device_power = device_status.get("power") if isinstance(device_status.get("power"), dict) else {}
     tools = data.get("tools") or {}
 
     lines = [
@@ -114,6 +117,18 @@ def build_report(data: dict[str, Any]) -> str:
         f"- transfer target: {_scalar((frame.get('transfer') or {}).get('target'))}",
         f"- transfer bytes: {_scalar((frame.get('transfer') or {}).get('bytes'))}",
         f"- error: {_scalar(frame.get('error') or frame.get('wifi_error'), 'none')}",
+        "",
+        "## Power",
+        f"- mode: {_scalar(frame_power.get('mode') or device_power.get('mode') or device_status.get('power_mode'), 'always-on')}",
+        f"- source: {_scalar(frame_power.get('power_source') or device_power.get('source') or device_status.get('power_source'))}",
+        f"- battery_pct: {_scalar(frame_power.get('battery_pct') or device_power.get('battery_pct') or device_status.get('battery_pct'))}",
+        f"- battery_mv: {_scalar(frame_power.get('battery_mv') or device_power.get('battery_mv') or device_status.get('battery_mv'))}",
+        f"- vbus_mv: {_scalar(frame_power.get('vbus_mv') or device_power.get('vbus_mv') or device_status.get('vbus_mv'))}",
+        f"- on_usb: {_scalar(frame_power.get('on_usb') if 'on_usb' in frame_power else device_power.get('on_usb') if 'on_usb' in device_power else device_status.get('on_usb'))}",
+        f"- charging: {_scalar(frame_power.get('charging') if 'charging' in frame_power else device_power.get('charging') if 'charging' in device_power else device_status.get('charging'))}",
+        f"- deep_sleep: {_scalar(frame_power.get('deep_sleep_status') or device_power.get('deep_sleep_status'))}",
+        f"- BLE: {_scalar(frame_power.get('ble_status') or device_power.get('ble_status'))}",
+        f"- wake_reason: {_scalar(frame_power.get('last_wake_reason') or device_power.get('last_wake_reason') or device_status.get('wake_reason'))}",
         "",
         "## Local Tools",
         f"- OS: {_scalar(tools.get('os'))}",

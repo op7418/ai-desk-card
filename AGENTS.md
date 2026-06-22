@@ -527,6 +527,105 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 git diff --check
 ```
 
+Stage 8 completed:
+
+- Stage 8 keeps PaperS3 on the validated raw full-frame, Wi-Fi HTTP,
+  portrait `540x960`, and touch-action paths from earlier phases.
+- PaperS3 has a conservative profile-local power policy in
+  `config/device_profiles.json`: default `always-on`, supported modes
+  `always-on`, `idle-low-power`, and `sleep-card`; deep sleep and BLE are
+  explicitly unsupported until wake/recovery is verified on hardware.
+- PaperS3 firmware now reads battery percentage, battery mV, VBUS mV,
+  charging state, USB/source state, and wake reason. Unknown USB/charging
+  readings are reported as JSON null instead of guessed booleans.
+- PaperS3 firmware `/status` and serial `status_report` expose
+  `power_mode`, `power_source`, `vbus_mv`, `deep_sleep_enabled=false`,
+  `wake_reason`, and `last_power_read_ms`.
+- Daemon `/heartbeat` and `/frame-status` expose a merged `power` section
+  from profile policy plus latest firmware telemetry.
+- PaperS3 settings/status page now shows power mode/source, battery/VBUS,
+  USB/charging, and wake reason.
+- PaperS3 `sleep` action is sleep-card only: it renders/pushes the sleep
+  card and returns `deep_sleep=false` without sending `cmd:sleep_now`.
+  M5Paper V1.1 still sends `cmd:sleep_now`.
+- `scripts/diagnose_device.py` prints a PaperS3 power section, and
+  `scripts/collect_papers3_wifi_report.py` includes a redacted Power section.
+- README, `SKILL.md`, card-widget docs, install/transport/sleep flows, and
+  `/card-sleep` command docs now describe the profile-specific sleep behavior.
+- Wi-Fi transport `connected()` is deterministic: a failed HTTP frame/command
+  marks it disconnected until a later HTTP frame/command succeeds.
+
+Useful Stage 8 PaperS3 real-device checks:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "application/json" -Body "{}"
+.\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+.\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
+```
+
+Expected Stage 8 real-device evidence:
+
+- Firmware boot/status logs include `[power] source=... usb=... charging=...`
+  with battery, VBUS, `mode=always-on`, and `wake=...`.
+- PaperS3 `/status` includes a `power` object and top-level power fields.
+- Daemon `/frame-status` includes `power.mode=always-on`,
+  `deep_sleep_status=unsupported`, and `ble_status=unsupported`.
+- `/sleep` returns `mode=sleep-card`, `deep_sleep=false`, and PaperS3 keeps
+  accepting later Wi-Fi/USB pushes without a deep-sleep wake sequence.
+
+Stage 8 real-device acceptance:
+
+- User uploaded PaperS3 firmware successfully over `COM3`; upload wrote
+  `990560` bytes and reset via RTS.
+- `pio run -e paper-s3 -t upload -t monitor --upload-port COM3` captured boot
+  logs on real hardware:
+  `[probe] setup entered before M5.begin`, `[probe] M5.begin returned`,
+  `[boot] ai-desk-card PaperS3 bring-up`,
+  `[power] source=unknown usb=unknown charging=yes battery=86% battery_mv=3988 vbus_mv=-1 mode=always-on wake=boot`,
+  and `[feature] deep sleep unsupported for paper-s3 (sleep-card only)`.
+- Firmware serial status reports included Stage 8 fields:
+  `vbus_mv=-1`, `power_source=unknown`, `power_mode=always-on`,
+  `deep_sleep_enabled=false`, `wake_reason=boot`, and
+  `last_power_read_ms`.
+- PaperS3 joined Wi-Fi at `192.168.137.253`, RSSI approximately `-30` to
+  `-34`, and advertised HTTP/mDNS.
+- Daemon was restarted with Wi-Fi transport. `/pair-status` reported
+  `connected=true`, `transport=WiFiTransport`, `selected_profile=paper-s3`,
+  `profile_source=telemetry`, and preferred transport `Wi-Fi`.
+- Daemon `/heartbeat` reported `alive=true`, `active_transport=Wi-Fi`,
+  `transport_connected=true`, battery around `87%`, `vbus_mv=-1`,
+  `on_usb=null`, `charging=true`, and merged power status:
+  `mode=always-on`, `deep_sleep_status=unsupported`,
+  `ble_status=unsupported`, `last_wake_reason=boot`.
+- PaperS3 HTTP `/status` reported top-level and nested `power` fields:
+  `power_mode=always-on`, `deep_sleep_enabled=false`, `wake_reason=boot`,
+  `last_power_read_ms`, `on_usb=null`, and `charging=true`.
+- User reported `dashboard` and `status` demo pushes were normal over Wi-Fi.
+- `POST /sleep` returned `ok=true`, `mode=sleep-card`,
+  `deep_sleep=false`, and `deep_sleep_status=unsupported`.
+- Daemon `/frame-status` after sleep/status reported `result=ok`,
+  transfer `method=http`, `target=wifi`, `bytes=259200`,
+  `active_transport=Wi-Fi`, `wifi_state=WIFI_CONNECTED`, and power
+  `mode=always-on`, `deep_sleep_status=unsupported`, `ble_status=unsupported`.
+- The `vbus_mv=-1` / `on_usb=null` result is accepted for this hardware
+  reading: Stage 8 intentionally reports unknown rather than guessing USB
+  presence when VBUS is unavailable, while battery and charging remain visible.
+Verification run in Stage 8 implementation:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card;E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py scripts\card_cli.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py scripts\collect_papers3_wifi_report.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

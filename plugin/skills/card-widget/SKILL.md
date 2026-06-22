@@ -30,8 +30,8 @@ time depends on the transport.
 
 For M5Stack PaperS3, use `--profile paper-s3` commands. The current
 recommended transport is Wi-Fi HTTP after USB serial provisioning. USB serial
-remains the setup/fallback path; BLE, deep sleep, and battery policy are not
-implemented for PaperS3 yet.
+remains the setup/fallback path. PaperS3 supports power telemetry and
+sleep-card mode; BLE and deep sleep are not implemented for PaperS3 yet.
 
 ## Transport & latency (v0.8)
 
@@ -348,9 +348,10 @@ to push.
 
 ## Sleep-frame (name card)
 
-The device has a "digital business card" mode: when it deep-sleeps the
-e-ink panel retains the last frame at 0 W until power-cycled. To push the
-card and put the device to sleep:
+The device has a "digital business card" mode. On M5Paper V1.1, the daemon
+pushes the card and then enters firmware deep sleep. On PaperS3, `/card-sleep`
+pushes the same sleep-card frame but does not send a deep-sleep command.
+To push the card:
 
 ```bash
 /card-sleep

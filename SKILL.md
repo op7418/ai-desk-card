@@ -90,8 +90,9 @@ The Skill supports these device profiles:
 - **M5Paper V1.1** (540×960 grayscale, GT911 touch, BLE pair) — original
 - **M5Stack PaperS3** (logical 540×960 grayscale, GT911 touch) — `paper-s3`
   profile. Current recommended transport is Wi-Fi HTTP full-frame push after
-  USB serial provisioning. USB serial remains the setup/fallback path. BLE,
-  deep sleep, and battery policy are not implemented for PaperS3 yet.
+  USB serial provisioning. USB serial remains the setup/fallback path. Power
+  status, battery/USB telemetry, and sleep-card mode are supported; BLE and
+  deep sleep are not implemented for PaperS3 yet.
 - **M5Paper Color** (600×400 Spectra 6 color, 3 physical buttons, audio + SHT40) — new in v0.10
 
 Profile selection rules:
@@ -125,7 +126,9 @@ For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body (@{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json)
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "application/json" -Body "{}"
 .\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
+.\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
 ```
 
 The PaperS3 firmware may show its touch calibration/test screen after
@@ -155,7 +158,7 @@ re-probe.
 | `interests.configured == false` AND user just asked for "auto-refresh" or "定时推送" | Ask about interests, write `~/.ai-desk-card/interests.yaml` | [flows/04_interests.md](flows/04_interests.md) |
 | `device.alive == true` + user said "push X" | Build widget JSON, POST to daemon | [flows/05_push.md](flows/05_push.md) |
 | `device.alive == true` + user said "schedule" / "每 N 分钟" / "auto" | Set up scheduled push | [flows/06_schedule.md](flows/06_schedule.md) |
-| `device.alive == true` + user said "sleep" / "息屏" | Push business card + deep sleep | [flows/07_sleep.md](flows/07_sleep.md) |
+| `device.alive == true` + user said "sleep" / "息屏" | Push business card; PaperS3 is sleep-card only, V1.1 enters deep sleep | [flows/07_sleep.md](flows/07_sleep.md) |
 
 Always tell the user which step you're on. Don't operate silently.
 
@@ -219,9 +222,10 @@ The Skill provides the *what* (interests + push) — your agent provides the
   — … °. Use the safe glyph set documented in
   [plugin/skills/card-widget/SKILL.md](plugin/skills/card-widget/SKILL.md).
 - **M5Paper V1.1:** Wi-Fi preferred over USB / BLE. 0.2 s vs 1–32 s vs broken.
-- **PaperS3:** Wi-Fi HTTP is the Phase 7 transport after serial
-  provisioning. USB serial remains the setup/fallback path. Do not claim
-  BLE, deep sleep, or battery policy support for PaperS3.
+- **PaperS3:** Wi-Fi HTTP is the preferred transport after serial
+  provisioning. USB serial remains the setup/fallback path. Battery/USB power
+  telemetry and sleep-card are supported. Do not claim BLE or deep sleep
+  support for PaperS3.
 
 ## Hardware: what the user needs
 
