@@ -2,7 +2,14 @@
 description: First-time setup wizard — detects daemon/USB/firmware and walks you through whatever's missing.
 ---
 
-Run the card-onboard skill. AI will probe daemon + connection + firmware
+Run the card-onboard skill.
+For PaperS3 on Windows, the executable path is:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+```
+
+AI will probe daemon + connection + firmware
 state, then guide you through whichever step (start daemon / plug USB /
 flash firmware / pair BLE) needs handling.
 

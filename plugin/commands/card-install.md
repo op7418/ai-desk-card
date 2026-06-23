@@ -9,6 +9,11 @@ Subcommands:
             Always prompts for confirmation; sha256 check on download path.
 
 PaperS3 / Windows PowerShell path:
+Preferred first install / post-flash command:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+```
 
 ```powershell
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3

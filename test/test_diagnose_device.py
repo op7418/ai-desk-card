@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import urllib.request
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +23,7 @@ class DiagnoseDeviceTest(unittest.TestCase):
         )
         self.assertIn("--profile", advice["daemon_command"])
         self.assertIn("paper-s3", advice["demo_status_command"])
+        self.assertIn("onboard_papers3.py", advice["onboard_command"].replace("\\", "/"))
         self.assertIn("[frame]", advice["daemon_log_patterns"])
         self.assertIn("[touch]", advice["device_log_patterns"])
 
@@ -76,6 +78,46 @@ class DiagnoseDeviceTest(unittest.TestCase):
         self.assertEqual(section["deep_sleep_status"], "unsupported")
         self.assertEqual(section["ble_status"], "unsupported")
         self.assertEqual(section["last_wake_reason"], "boot")
+
+    def test_device_status_uses_direct_opener(self):
+        import diagnose_device
+
+        captured = {}
+        old_build_opener = urllib.request.build_opener
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"device":"M5Stack PaperS3"}'
+
+        class FakeOpener:
+            def open(self, url, timeout=0):
+                captured["url"] = url
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        def fake_build_opener(*handlers):
+            captured["proxies"] = handlers[0].proxies
+            return FakeOpener()
+
+        urllib.request.build_opener = fake_build_opener
+        try:
+            code, status = diagnose_device._device_status("192.0.2.44", 9880)
+        finally:
+            urllib.request.build_opener = old_build_opener
+
+        self.assertEqual(code, 200)
+        self.assertEqual(status["device"], "M5Stack PaperS3")
+        self.assertEqual(captured["url"], "http://192.0.2.44:9880/status")
+        self.assertEqual(captured["timeout"], 4)
+        self.assertEqual(captured["proxies"], {})
 
 
 if __name__ == "__main__":

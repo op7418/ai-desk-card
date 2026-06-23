@@ -168,7 +168,8 @@ def _run_text(cmd: list[str], timeout: float = 5.0) -> str:
 
 def _request_json(url: str, timeout: float = 4.0) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as res:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=timeout) as res:
             raw = res.read().decode("utf-8") or "{}"
             return json.loads(raw)
     except urllib.error.HTTPError as exc:

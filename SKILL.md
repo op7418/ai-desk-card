@@ -119,6 +119,8 @@ For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
 
 ```powershell
 [System.IO.Ports.SerialPort]::GetPortNames()
+# Preferred first install / post-flash wrapper for PaperS3:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
@@ -131,9 +133,9 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "ap
 .\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
 ```
 
-The PaperS3 firmware may show its touch calibration/test screen after
-flashing or rebooting. That is normal until the daemon pushes the first
-real frame. For first setup, push `dashboard` as the first real widget card.
+The PaperS3 firmware shows a formal waiting/dashboard screen after flashing
+or rebooting. The first setup flow should start the daemon and push
+`dashboard` as the first real widget card, replacing that waiting screen.
 
 Otherwise (default) use the **V1.1 path** through the routing table below.
 

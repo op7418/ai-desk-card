@@ -7,6 +7,12 @@ the M5Paper running the ai-desk-card firmware. Pushes any cached widgets
 on (re)connect.
 
 PaperS3 / Windows PowerShell path:
+After flashing or for first setup, prefer the wrapper so the first real frame
+is the dashboard:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+```
 
 ```powershell
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3

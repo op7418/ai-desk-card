@@ -96,6 +96,39 @@ class CardCliTest(unittest.TestCase):
         self.assertEqual(captured[0][0][-1], "dashboard")
         self.assertTrue(captured[0][1])
 
+    def test_onboard_command_delegates_to_paper_s3_wrapper(self):
+        import card_cli
+
+        captured = []
+        old_run_or_print = card_cli._run_or_print
+
+        def fake_run_or_print(cmd, dry_run):
+            captured.append((cmd, dry_run))
+            return 0
+
+        card_cli._run_or_print = fake_run_or_print
+        try:
+            result = card_cli.main([
+                "onboard",
+                "--profile", "paper-s3",
+                "--port", "COM3",
+                "--host", "192.168.137.253",
+                "--dry-run",
+            ])
+        finally:
+            card_cli._run_or_print = old_run_or_print
+
+        self.assertEqual(result, 0)
+        command = captured[0][0]
+        self.assertIn("onboard_papers3.py", "/".join(command).replace("\\", "/"))
+        self.assertIn("--profile", command)
+        self.assertIn("paper-s3", command)
+        self.assertIn("--port", command)
+        self.assertIn("COM3", command)
+        self.assertIn("--host", command)
+        self.assertIn("192.168.137.253", command)
+        self.assertTrue(captured[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

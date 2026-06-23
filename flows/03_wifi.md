@@ -26,6 +26,12 @@ The daemon forwards the credentials to the device via the active
 transport (serial / BLE). Credentials are stored in the device's NVS
 flash — never on the daemon side, never in git.
 
+PaperS3 Windows shortcut: `scripts\card_cli.py onboard --profile paper-s3 --port COM3`
+performs this provisioning step through the serial daemon, then restarts the
+daemon with `--transport wifi --http-host 0.0.0.0` and pushes the first
+dashboard. If the PaperS3 is already provisioned, pass `--host <PaperS3-IP>`
+to skip re-entering credentials.
+
 ## Step 3 — Wait for connect
 
 Allow ~15 seconds, then re-probe:

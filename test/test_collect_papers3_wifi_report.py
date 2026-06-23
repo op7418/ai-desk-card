@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import urllib.request
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +54,42 @@ class CollectPaperS3WiFiReportTest(unittest.TestCase):
         self.assertIn("deep_sleep: unsupported", text)
         self.assertIn("BLE: unsupported", text)
         self.assertIn("wake_reason: boot", text)
+
+    def test_request_json_uses_direct_opener(self):
+        captured = {}
+        old_build_opener = urllib.request.build_opener
+
+        class FakeResponse:
+            def __enter__(self):
+                self.status = 200
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"wifi":{"connected":true}}'
+
+        class FakeOpener:
+            def open(self, url, timeout=0):
+                captured["url"] = url
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        def fake_build_opener(*handlers):
+            captured["proxies"] = handlers[0].proxies
+            return FakeOpener()
+
+        urllib.request.build_opener = fake_build_opener
+        try:
+            data = report._request_json("http://192.0.2.44:9880/status", timeout=3)
+        finally:
+            urllib.request.build_opener = old_build_opener
+
+        self.assertTrue(data["wifi"]["connected"])
+        self.assertEqual(captured["url"], "http://192.0.2.44:9880/status")
+        self.assertEqual(captured["timeout"], 3)
+        self.assertEqual(captured["proxies"], {})
 
 
 if __name__ == "__main__":

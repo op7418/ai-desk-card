@@ -64,6 +64,16 @@ pio run -e paper-color -t upload   # no uploadfs needed (built-in font)
 ```
 
 **M5Stack PaperS3** (`paper-s3` profile):
+Preferred Windows wrapper:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+```
+
+The wrapper probes current daemon/device state, builds and uploads firmware,
+starts a serial daemon for provisioning, asks for Wi-Fi credentials if needed,
+switches to a Wi-Fi daemon when an IP is known, and pushes `dashboard` as the
+first real frame. It does not log the Wi-Fi password. Manual equivalent:
 
 ```powershell
 $env:PLATFORMIO_CORE_DIR=".pio-core"
@@ -87,9 +97,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -Conten
 ```
 
 The first successful post-install push should be `dashboard`, not `text`.
-The firmware's touch calibration/test screen is normal immediately after
-flashing or rebooting; it should be replaced once the daemon pushes the
-dashboard frame.
+The firmware waiting/dashboard screen is normal immediately after flashing
+or rebooting; it should be replaced once the daemon pushes the dashboard frame.
 
 Total ~60 seconds the second time; the first run downloads toolchains.
 Echo each command's outcome to the user.

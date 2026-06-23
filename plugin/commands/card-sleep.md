@@ -12,4 +12,8 @@ Edit `ai-desk-card/assets/profile.yaml` directly if the user wants to
 update their card content. Drop a custom `assets/avatar.png` and/or
 `assets/qr.png` in the same directory (placeholders are used otherwise).
 
+PaperS3 onboarding keeps the dashboard on screen. Run `/card-sleep` or
+`scripts\onboard_papers3.py --push-sleep-card` only when you want to display
+the name-card frame now.
+
 !`bash "$CLAUDE_PLUGIN_ROOT/scripts/sleep.sh" "$ARGUMENTS"`

@@ -27,6 +27,11 @@ If missing or default placeholders ("Your Name"), ask the user:
 Then write `assets/profile.yaml` (see existing structure as the
 template).
 
+PaperS3 onboarding leaves the dashboard visible. `scripts\card_cli.py onboard`
+only checks that `assets/profile.yaml` is the sleep-card source; it does not
+push `/sleep` by default. Use `scripts\onboard_papers3.py --push-sleep-card`
+only when you explicitly want to verify the name card and replace the dashboard.
+
 ## Step 2 — Push sleep frame
 
 ```bash

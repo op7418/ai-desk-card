@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 5 PaperS3 widget demo helper.
+"""PaperS3 widget demo and first-dashboard helper.
 
 This script talks to the existing daemon HTTP API. The daemon owns the
 PaperS3 serial connection and pushes the rendered 540x960 4bpp frame.

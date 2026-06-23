@@ -45,6 +45,13 @@ if REPO_ROOT not in sys.path:
 
 import card_profiles
 
+
+def _urlopen_direct(req, timeout: float):
+    """Open LAN device URLs without inheriting desktop HTTP proxy settings."""
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
+
 # v0.6 server-side rendering. Device receives 540×960 4bpp pixel frames
 # rather than widget_set JSON. We bump baud accordingly. Push debounce on
 # top of M5EPD's ~500ms refresh time means we don't hammer the panel.
@@ -253,7 +260,7 @@ class WiFiTransport(Transport):
                 data=json.dumps(obj).encode(),
                 method="POST",
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=4) as r:
+            with _urlopen_direct(req, timeout=4) as r:
                 _ = r.read()
             self._connect_ok = True
             self.last_error = ""
@@ -293,7 +300,7 @@ class WiFiTransport(Transport):
             req = urllib.request.Request(
                 url, data=packed, method="POST",
                 headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with _urlopen_direct(req, timeout=15) as r:
                 ok = (r.status == 200)
             self._connect_ok = ok
             self.last_error = "" if ok else f"frame HTTP status {r.status}"
@@ -779,7 +786,7 @@ def _verify_wifi_reachable(ip: str) -> bool:
         import urllib.request
         req = urllib.request.Request(
             f"http://{ip}:{_BURST_HTTP_PORT}/status", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with _urlopen_direct(req, timeout=2) as r:
             return r.status == 200
     except Exception:
         return False

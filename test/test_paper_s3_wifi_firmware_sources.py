@@ -61,6 +61,17 @@ class PaperS3WiFiFirmwareSourcesTest(unittest.TestCase):
             self.assertIn(field, main_cpp)
             self.assertIn(field, http_cpp)
 
+    def test_paper_s3_startup_screen_waits_for_dashboard_not_touch_test(self):
+        main_cpp = self._read("src/paper_s3/main.cpp")
+        hw_cpp = self._read("src/paper_s3/paper_s3_hw.cpp")
+        hw_h = self._read("src/paper_s3/paper_s3_hw.h")
+
+        self.assertIn("paintWaitingForDashboardScreen", hw_h)
+        self.assertIn("paintWaitingForDashboardScreen(CARD_VERSION, wifiIPStr())", main_cpp)
+        self.assertNotIn("paintTouchCalibrationScreen(CARD_VERSION)", main_cpp)
+        self.assertIn("Waiting for dashboard", hw_cpp)
+        self.assertNotIn("PaperS3 Touch Test", hw_cpp)
+
 
 if __name__ == "__main__":
     unittest.main()

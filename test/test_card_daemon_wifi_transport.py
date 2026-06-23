@@ -28,9 +28,36 @@ class _FakeResponse:
 
 
 class CardDaemonWiFiTransportTest(unittest.TestCase):
+    def test_direct_urlopen_uses_empty_proxy_handler(self):
+        captured = {}
+        old_build_opener = urllib.request.build_opener
+
+        class FakeOpener:
+            def open(self, req, timeout=0):
+                captured["url"] = req.full_url
+                captured["timeout"] = timeout
+                return _FakeResponse()
+
+        def fake_build_opener(*handlers):
+            captured["proxies"] = handlers[0].proxies
+            return FakeOpener()
+
+        urllib.request.build_opener = fake_build_opener
+        try:
+            req = urllib.request.Request("http://192.0.2.42:9880/status")
+            with card_daemon._urlopen_direct(req, timeout=3) as res:
+                status = res.status
+        finally:
+            urllib.request.build_opener = old_build_opener
+
+        self.assertEqual(status, 200)
+        self.assertEqual(captured["url"], "http://192.0.2.42:9880/status")
+        self.assertEqual(captured["timeout"], 3)
+        self.assertEqual(captured["proxies"], {})
+
     def test_wifi_transport_posts_frame_with_integrity_headers(self):
         captured = {}
-        old_urlopen = urllib.request.urlopen
+        old_urlopen = card_daemon._urlopen_direct
 
         def fake_urlopen(req, timeout=0):
             captured["url"] = req.full_url
@@ -39,7 +66,7 @@ class CardDaemonWiFiTransportTest(unittest.TestCase):
             captured["headers"] = dict(req.header_items())
             return _FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen
+        card_daemon._urlopen_direct = fake_urlopen
         try:
             transport = card_daemon.WiFiTransport("192.0.2.42", 9880)
             ok = transport.push_frame_http(
@@ -49,7 +76,7 @@ class CardDaemonWiFiTransportTest(unittest.TestCase):
                 crc=0x1234ABCD,
             )
         finally:
-            urllib.request.urlopen = old_urlopen
+            card_daemon._urlopen_direct = old_urlopen
 
         self.assertTrue(ok)
         self.assertEqual(captured["url"], "http://192.0.2.42:9880/frame")
@@ -64,17 +91,17 @@ class CardDaemonWiFiTransportTest(unittest.TestCase):
         self.assertEqual(transport.last_error, "")
 
     def test_wifi_transport_records_host_unreachable_error(self):
-        old_urlopen = urllib.request.urlopen
+        old_urlopen = card_daemon._urlopen_direct
 
         def fake_urlopen(req, timeout=0):
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
-        urllib.request.urlopen = fake_urlopen
+        card_daemon._urlopen_direct = fake_urlopen
         try:
             transport = card_daemon.WiFiTransport("192.0.2.77", 9880)
             ok = transport.push_frame_http(b"\x00" * card_daemon.FRAME_BYTES, None)
         finally:
-            urllib.request.urlopen = old_urlopen
+            card_daemon._urlopen_direct = old_urlopen
 
         self.assertFalse(ok)
         self.assertFalse(transport.connected())

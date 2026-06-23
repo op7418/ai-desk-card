@@ -133,6 +133,13 @@ PaperS3 当前推荐路径是：USB serial 完成烧录和一次性 Wi-Fi 配置
 ```powershell
 cd E:\dev\ai-desk-card
 $env:PLATFORMIO_CORE_DIR=".pio-core"
+# Recommended first install / post-flash wrapper for PaperS3.
+# It probes, builds/uploads unless skipped, starts the serial daemon,
+# provisions Wi-Fi when needed, switches to the Wi-Fi daemon, and pushes dashboard.
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+
+# If Wi-Fi is already provisioned and the PaperS3 IP is known:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --host 192.168.137.253
 
 # 查看 COM 口
 [System.IO.Ports.SerialPort]::GetPortNames()
@@ -202,7 +209,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "ap
 .\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
 ```
 
-烧录或重启后，PaperS3 短暂显示触摸校准/测试圆圈页是正常的；daemon 推送第一张真实卡片后会覆盖它。首次安装完成建议首推 `dashboard`，再按需要测试 `status` / `text` / mock widget。
+烧录或重启后，PaperS3 固件首屏会显示 waiting/dashboard 页面；运行 `scripts\card_cli.py onboard --profile paper-s3 --port COM3` 或手动推 `dashboard` 后，应被第一张真实 dashboard 覆盖。首次安装完成建议再按需要测试 `status` / `text` / mock widget。
 
 ## 安装
 

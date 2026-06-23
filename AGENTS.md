@@ -626,6 +626,136 @@ $env:PLATFORMIO_CORE_DIR=".pio-core"
 git diff --check
 ```
 
+Final PaperS3 polish after Stage 8:
+
+- Continued from commit `9da2d6a feat: finish PaperS3 power release path`.
+- Added `scripts/onboard_papers3.py`, a thin PaperS3 first-run wrapper that
+  reuses existing commands instead of reimplementing rendering:
+  - probes serial ports, daemon `/pair-status`, and `/heartbeat`;
+  - builds and uploads PaperS3 firmware unless `--skip-build` /
+    `--skip-upload` is passed;
+  - starts a serial daemon for initial provisioning when no usable Wi-Fi daemon
+    is already connected;
+  - provisions Wi-Fi through `/provision-wifi` without logging the password;
+  - switches to / reuses Wi-Fi daemon with `--http-host 0.0.0.0` when an IP is
+    known;
+  - pushes the first real `dashboard` via `scripts/demo_papers3_widgets.py`;
+  - leaves the dashboard visible by default and only pushes sleep-card with
+    explicit `--push-sleep-card`.
+- `scripts/card_cli.py onboard --profile paper-s3 --port COM3` delegates to the
+  wrapper. If PaperS3 is already provisioned, use `--host <PaperS3-IP>` to skip
+  re-entering credentials; the wrapper also reuses an already connected Wi-Fi
+  daemon instead of starting a second daemon on port 9877.
+- PaperS3 firmware startup now shows a formal waiting/dashboard page via
+  `paintWaitingForDashboardScreen(CARD_VERSION, wifiIPStr())` instead of the
+  old touch calibration/test target page. Touch mapping, touch logs, raw
+  full-frame rendering, Wi-Fi HTTP push, and sleep-card policy were not changed.
+- Text-position request status: existing render surfaces were located
+  (`daemon/card_render_settings.py`, `daemon/card_render_sleep.py`,
+  `daemon/card_render.py`, `src/paper_s3/paper_s3_hw.cpp`,
+  `src/paper_s3/main.cpp`). No Python renderer text positions were changed
+  because no page/photo-specific offset was provided; ask for a photo or exact
+  page before adjusting layout.
+- Docs updated: `README.md`, `SKILL.md`, `flows/01_install.md`,
+  `flows/03_wifi.md`, `flows/07_sleep.md`, `/card-install`, `/card-onboard`,
+  `/card-start`, and `/card-sleep` now point to the PaperS3 onboarding wrapper
+  and the waiting/dashboard startup behavior.
+- Local verification completed after implementation:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card;E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py daemon\card_render_sleep.py scripts\card_cli.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py scripts\onboard_papers3.py scripts\collect_papers3_wifi_report.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
+- Real-device acceptance commands for the startup/dashboard polish:
+
+```powershell
+cd E:\dev\ai-desk-card
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --host 192.168.137.48 --skip-build --skip-upload
+Invoke-RestMethod -Uri http://127.0.0.1:9877/frame-status | ConvertTo-Json -Depth 6
+Invoke-RestMethod -Uri http://127.0.0.1:9877/heartbeat | ConvertTo-Json -Depth 6
+```
+
+- User uploaded/rebooted PaperS3 over `COM3` and captured real hardware boot
+  logs. Firmware startup now shows the production waiting page:
+  `[display] PaperS3 waiting dashboard screen pushed`, followed by
+  `[boot] ready; start daemon and push the first dashboard frame`.
+- The reboot logs confirmed the verified paths stayed intact:
+  touch `rotate-cw-inverse` logical `540x960`, PSRAM frame buffer
+  `259200` bytes, serial frame stream active, PaperS3 power mode
+  `always-on`, BLE disabled, and deep sleep unsupported / sleep-card only.
+- PaperS3 rejoined Wi-Fi at `192.168.137.48` with RSSI around `-28`,
+  started HTTP on `:9880`, and advertised mDNS as
+  `papers3-ff40.local _ai-desk-card._tcp:9880`.
+- Serial `status_report` after reboot reported firmware
+  `0.10.7-paper-s3-frame`, `wifi_connected=true`,
+  `wifi_state=WIFI_CONNECTED`, `frame_state=ready`, battery `100%`,
+  `vbus_mv=-1`, `on_usb=null`, and `charging=false`.
+- User then pushed the first dashboard over Wi-Fi. Final `/frame-status`
+  reported `render_id=5`, `selected_profile=paper-s3`,
+  `selected_view=widgets`, selected widgets
+  `weather`, `ai-status`, `calendar`, and `todo`, output `540x960` `4bpp`,
+  HTTP/Wi-Fi transfer `259200B`, `result=ok`, `ui_state=DISPLAYING_FRAME`,
+  `transport_connected=true`, `active_transport=Wi-Fi`,
+  `wifi_ip=192.168.137.48`, `wifi_state=WIFI_CONNECTED`, and power mode
+  `always-on`.
+- Final `/heartbeat` reported `alive=true`, `last_seen_seconds=23`,
+  firmware `0.10.7-paper-s3-frame`, profile source `telemetry`, device
+  `M5Stack PaperS3`, Wi-Fi connected at `192.168.137.48`, battery `100%`,
+  `vbus_mv=-1`, `on_usb=null`, `charging=false`, `deep_sleep_status=unsupported`,
+  and `ble_status=unsupported`.
+
+Final PaperS3 polish Wi-Fi recovery note:
+
+- On 2026-06-23, a first dashboard push reported `/frame-status result=failed`
+  with `paper-s3 wifi frame push failed: frame HTTP 192.168.137.253:9880: 502`
+  and `/heartbeat alive=false`.
+- Root cause was two-part:
+  - the desktop environment had `HTTP_PROXY` / `ALL_PROXY` set to
+    `http://127.0.0.1:7897` while `NO_PROXY` only covered localhost, so Python
+    `urllib` could send PaperS3 LAN requests through the proxy and report a
+    proxy `502`;
+  - PaperS3 was no longer at `192.168.137.253`. ARP showed
+    `192.168.137.48` for MAC `E8:F6:0A:84:FF:40`, and direct
+    `curl.exe --noproxy "*"` confirmed PaperS3 `/status` there.
+- `daemon/card_daemon.py` now uses a direct no-proxy opener for PaperS3
+  device-side Wi-Fi HTTP (`/cmd`, `/frame`, and reachability `/status`).
+  `scripts/diagnose_device.py` and `scripts/collect_papers3_wifi_report.py`
+  also bypass proxies for direct PaperS3 `/status` diagnostics.
+- The stale daemon PID `2056` was stopped and restarted against the current IP:
+
+```powershell
+.\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host 192.168.137.48 --wifi-port 9880 --http-host 0.0.0.0
+```
+
+- Hardware Wi-Fi recovery was verified after daemon restart:
+  `scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard`
+  completed with `result=ok`, output `540x960` `4bpp`, HTTP/Wi-Fi transfer
+  `259200B`; `/frame-status` reported `transport_connected=true`,
+  `active_transport=Wi-Fi`, `wifi_ip=192.168.137.48`, `result=ok`; `/heartbeat`
+  reported `alive=true`, firmware `0.10.7-paper-s3-frame`, Wi-Fi connected,
+  battery `100%`, and power mode `always-on`.
+- Verification after the recovery fix:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card;E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py daemon\card_render_sleep.py scripts\card_cli.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py scripts\onboard_papers3.py scripts\collect_papers3_wifi_report.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
+All passed; `git diff --check` only reported LF-to-CRLF warnings.
+- Startup waiting/dashboard firmware page real-device acceptance is complete.
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

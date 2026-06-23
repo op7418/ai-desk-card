@@ -69,6 +69,9 @@ def build_advice(profile: dict, *, root: str = ROOT,
         "demo_text_command": card_cli.format_command(
             card_cli.demo_command(profile, "text", root=root)
         ),
+        "onboard_command": card_cli.format_command(
+            card_cli.onboard_command(profile, root=root, port=port, host=host)
+        ),
         "daemon_log_patterns": DAEMON_LOG_PATTERNS,
         "device_log_patterns": DEVICE_LOG_PATTERNS,
     }
@@ -177,6 +180,11 @@ def _request_json(method: str, daemon_url: str, path: str,
         return 0, {"error": f"daemon unreachable: {exc.reason}"}
 
 
+def _urlopen_direct(url: str, timeout: float):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(url, timeout=timeout)
+
+
 def _platformio_env_exists(env_name: str, root: str = ROOT) -> bool:
     ini_path = os.path.join(root, "platformio.ini")
     if not os.path.exists(ini_path):
@@ -212,7 +220,7 @@ def _tcp_reachable(host: str, port: int, timeout: float = 2.0) -> tuple[bool, st
 def _device_status(host: str, port: int) -> tuple[int, dict]:
     url = f"http://{host}:{port}/status"
     try:
-        with urllib.request.urlopen(url, timeout=4) as res:
+        with _urlopen_direct(url, timeout=4) as res:
             return res.status, json.loads(res.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
@@ -339,6 +347,7 @@ def run(args: argparse.Namespace) -> int:
 
     print("[diagnose] diagnostic summary:")
     print(f"[diagnose]   profile={profile['name']} transport={args.transport or 'default'} host={args.host or ''} wifi_port={args.wifi_port or 9880} http_host={args.http_host or 'default'}")
+    print(f"[diagnose]   onboard={advice['onboard_command']}")
     print("[diagnose]   copy daemon log lines containing: " + ", ".join(DAEMON_LOG_PATTERNS))
     print("[diagnose]   copy PaperS3 serial lines containing: " + ", ".join(DEVICE_LOG_PATTERNS + ["[wifi]", "[http]", "[mdns]"]))
     return 0 if ok else 2

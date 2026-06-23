@@ -484,9 +484,9 @@ void setup() {
     wifiAutoConnect();
     logBootSummary();
 
-    paper_s3::paintTouchCalibrationScreen(CARD_VERSION);
-    Serial.println("[display] PaperS3 touch calibration screen pushed");
-    Serial.println("[boot] ready; send {\"cmd\":\"ping\"}, wifi_set, or frame data");
+    paper_s3::paintWaitingForDashboardScreen(CARD_VERSION, wifiIPStr());
+    Serial.println("[display] PaperS3 waiting dashboard screen pushed");
+    Serial.println("[boot] ready; start daemon and push the first dashboard frame");
     emitStatusReport();
 }
 

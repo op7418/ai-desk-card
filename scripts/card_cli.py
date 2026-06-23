@@ -84,6 +84,33 @@ def demo_command(profile: dict, widget: str, *, root: str = ROOT) -> list[str]:
     ]
 
 
+def onboard_command(profile: dict, *, root: str = ROOT,
+                    port: str | None = None,
+                    host: str | None = None,
+                    no_wifi: bool = False,
+                    skip_build: bool = False,
+                    skip_upload: bool = False,
+                    non_interactive: bool = False) -> list[str]:
+    cmd = [
+        python_executable(root),
+        os.path.join(root, "scripts", "onboard_papers3.py"),
+        "--profile", profile["name"],
+    ]
+    if port:
+        cmd.extend(["--port", port])
+    if host:
+        cmd.extend(["--host", host])
+    if no_wifi:
+        cmd.append("--no-wifi")
+    if skip_build:
+        cmd.append("--skip-build")
+    if skip_upload:
+        cmd.append("--skip-upload")
+    if non_interactive:
+        cmd.append("--non-interactive")
+    return cmd
+
+
 def list_serial_ports() -> list[str]:
     try:
         from serial.tools import list_ports
@@ -144,6 +171,15 @@ def main(argv: list[str] | None = None) -> int:
         "todo-mock", "ai-status", "dashboard",
     ))
 
+    p_onboard = sub.add_parser("onboard", help="Run the PaperS3 first-run wrapper.")
+    add_profile(p_onboard)
+    p_onboard.add_argument("--port", default="COM3")
+    p_onboard.add_argument("--host")
+    p_onboard.add_argument("--no-wifi", action="store_true")
+    p_onboard.add_argument("--skip-build", action="store_true")
+    p_onboard.add_argument("--skip-upload", action="store_true")
+    p_onboard.add_argument("--non-interactive", action="store_true")
+
     p_ports = sub.add_parser("ports", help="List visible serial ports.")
     p_ports.add_argument("--dry-run", action="store_true")
 
@@ -176,6 +212,18 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "demo":
         cmd = demo_command(profile, args.widget)
+    elif args.command == "onboard":
+        if profile["name"] != "paper-s3":
+            parser.error("onboard is currently implemented for --profile paper-s3")
+        cmd = onboard_command(
+            profile,
+            port=args.port,
+            host=args.host,
+            no_wifi=args.no_wifi,
+            skip_build=args.skip_build,
+            skip_upload=args.skip_upload,
+            non_interactive=args.non_interactive,
+        )
     else:
         parser.error(f"unknown command {args.command}")
     return _run_or_print(cmd, args.dry_run)

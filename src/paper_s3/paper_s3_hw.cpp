@@ -308,56 +308,72 @@ void paintTestScreen(const char* firmwareVersion, const char* ipAddress) {
     g_canvas.pushSprite(0, 0);
 }
 
-void paintTouchCalibrationScreen(const char* firmwareVersion) {
+void paintWaitingForDashboardScreen(const char* firmwareVersion, const char* ipAddress) {
     if (!g_canvasReady) return;
 
     const int32_t w = g_canvas.width();
     const int32_t h = g_canvas.height();
+    const PowerState power = readPower();
+    const char* ip = (ipAddress && ipAddress[0]) ? ipAddress : kIpPlaceholder;
 
     g_canvas.fillSprite(kWhite);
-    g_canvas.drawRect(0, 0, w, h, kBlack);
-
-    g_canvas.setTextDatum(top_center);
+    g_canvas.fillRect(0, 0, w, 92, kBlack);
+    g_canvas.setTextColor(kWhite);
+    g_canvas.setTextDatum(middle_left);
     g_canvas.setFont(&fonts::FreeSansBold18pt7b);
-    g_canvas.setTextColor(kBlack);
-    g_canvas.drawString("PaperS3 Touch Test", w / 2, 24);
+    g_canvas.drawString("AI Desk Card", 32, 38);
 
     g_canvas.setFont(&fonts::FreeSans9pt7b);
-    char line[96];
-    snprintf(line, sizeof(line), "fw %s  map %s  logical 540x960",
-             firmwareVersion, touchMapName());
-    g_canvas.drawString(line, w / 2, 66);
+    g_canvas.setTextDatum(top_right);
+    g_canvas.drawString("M5Stack PaperS3", w - 32, 24);
+    g_canvas.drawString("Waiting for dashboard", w - 32, 52);
 
-    int32_t x0 = 0;
-    int32_t y0 = 0;
-    int32_t x1 = 0;
-    int32_t y1 = 0;
-    mapLogicalToScreen(0, 0, &x0, &y0);
-    mapLogicalToScreen(kLogicalFrameWidth - 1, 0, &x1, &y1);
-    g_canvas.drawLine(x0, y0, x1, y1, kMidGray);
-    mapLogicalToScreen(kLogicalFrameWidth - 1, kLogicalFrameHeight - 1, &x0, &y0);
-    g_canvas.drawLine(x1, y1, x0, y0, kMidGray);
-    mapLogicalToScreen(0, kLogicalFrameHeight - 1, &x1, &y1);
-    g_canvas.drawLine(x0, y0, x1, y1, kMidGray);
-    mapLogicalToScreen(0, 0, &x0, &y0);
-    g_canvas.drawLine(x1, y1, x0, y0, kMidGray);
+    g_canvas.setTextDatum(top_left);
+    g_canvas.setTextColor(kBlack);
+    g_canvas.setFont(&fonts::FreeSansBold18pt7b);
+    g_canvas.drawString("Ready for first frame", 40, 132);
 
-    drawLogicalTarget("TOP LEFT", 0, 0, 24, 28, top_left);
-    drawLogicalTarget("TOP RIGHT", kLogicalFrameWidth - 1, 0,
-                      kLogicalFrameWidth - 25, 28, top_right);
-    drawLogicalTarget("CENTER", kLogicalFrameWidth / 2, kLogicalFrameHeight / 2,
-                      kLogicalFrameWidth / 2, kLogicalFrameHeight / 2 + 32,
-                      top_center);
-    drawLogicalTarget("BOTTOM LEFT", 0, kLogicalFrameHeight - 1,
-                      24, kLogicalFrameHeight - 28, bottom_left);
-    drawLogicalTarget("BOTTOM RIGHT", kLogicalFrameWidth - 1,
-                      kLogicalFrameHeight - 1,
-                      kLogicalFrameWidth - 25, kLogicalFrameHeight - 28,
-                      bottom_right);
+    g_canvas.setFont(&fonts::FreeSans12pt7b);
+    g_canvas.setTextColor(kDarkGray);
+    g_canvas.drawString("Start the daemon, provision Wi-Fi if needed,", 40, 186);
+    g_canvas.drawString("then push the dashboard widget.", 40, 220);
 
+    char panelLine[48];
+    snprintf(panelLine, sizeof(panelLine), "%ld x %ld",
+             (long)displayWidth(), (long)displayHeight());
+
+    char batteryLine[64];
+    snprintf(batteryLine, sizeof(batteryLine), "%ld%% / %d mV",
+             (long)power.batteryPercent, (int)power.batteryMillivolts);
+
+    char usbLine[64];
+    const char* usbState = power.usbPresent > 0
+        ? "present"
+        : (power.usbPresent == 0 ? "absent" : "unknown");
+    const char* chargingState = power.charging > 0
+        ? "yes"
+        : (power.charging == 0 ? "no" : "unknown");
+    snprintf(usbLine, sizeof(usbLine), "USB %s, charging %s",
+             usbState, chargingState);
+
+    const int32_t top = 300;
+    const int32_t colW = (w - 96) / 2;
+    drawLabelValue("Firmware", firmwareVersion, 40, top);
+    drawLabelValue("IP address", ip, 40 + colW + 32, top);
+    drawLabelValue("Panel", panelLine, 40, top + 104);
+    drawLabelValue("Power", batteryLine, 40 + colW + 32, top + 104);
+
+    g_canvas.drawLine(40, h - 142, w - 40, h - 142, kMidGray);
+    g_canvas.setFont(&fonts::FreeSans9pt7b);
+    g_canvas.setTextColor(kDarkGray);
+    g_canvas.setTextDatum(top_left);
+    g_canvas.drawString(usbLine, 40, h - 112);
+    g_canvas.drawString("Touch is active after the first daemon frame.", 40, h - 82);
+    g_canvas.drawString("Expected first card: dashboard.", 40, h - 52);
+
+    g_canvas.fillRect(40, h - 22, w - 80, 4, kLightGray);
     g_canvas.pushSprite(0, 0);
 }
-
 bool draw4bppFrame(const uint8_t* packed, int32_t width, int32_t height) {
     if (!g_canvasReady || !packed) {
         Serial.println("[display] error: canvas not ready or frame buffer null");

@@ -52,7 +52,7 @@ TouchState readTouch();
 
 void clearDisplay();
 void paintTestScreen(const char* firmwareVersion, const char* ipAddress);
-void paintTouchCalibrationScreen(const char* firmwareVersion);
+void paintWaitingForDashboardScreen(const char* firmwareVersion, const char* ipAddress);
 bool draw4bppFrame(const uint8_t* packed, int32_t width, int32_t height);
 
 }  // namespace paper_s3
