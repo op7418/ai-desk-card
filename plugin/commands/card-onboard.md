@@ -9,6 +9,12 @@ For PaperS3 on Windows, the executable path is:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
 ```
 
+After the first dashboard is visible, configure auto-refresh interests with:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
+```
+
 AI will probe daemon + connection + firmware
 state, then guide you through whichever step (start daemon / plug USB /
 flash firmware / pair BLE) needs handling.

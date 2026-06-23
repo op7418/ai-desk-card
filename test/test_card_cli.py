@@ -129,6 +129,34 @@ class CardCliTest(unittest.TestCase):
         self.assertIn("192.168.137.253", command)
         self.assertTrue(captured[0][1])
 
+    def test_interests_command_delegates_to_configure_interests(self):
+        import card_cli
+
+        captured = []
+        old_run_or_print = card_cli._run_or_print
+
+        def fake_run_or_print(cmd, dry_run):
+            captured.append((cmd, dry_run))
+            return 0
+
+        card_cli._run_or_print = fake_run_or_print
+        try:
+            result = card_cli.main([
+                "interests",
+                "--profile", "paper-s3",
+                "--city", "Shanghai",
+                "--dry-run",
+            ])
+        finally:
+            card_cli._run_or_print = old_run_or_print
+
+        self.assertEqual(result, 0)
+        command = captured[0][0]
+        self.assertIn("configure_interests.py", "/".join(command).replace("\\", "/"))
+        self.assertIn("--city", command)
+        self.assertIn("Shanghai", command)
+        self.assertTrue(captured[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

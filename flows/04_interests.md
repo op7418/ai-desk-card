@@ -28,6 +28,21 @@ Path: `~/.ai-desk-card/interests.yaml`. Create the directory if missing:
 mkdir -p "$HOME/.ai-desk-card"
 ```
 
+PaperS3 / Windows shortcut after asking the user:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
+```
+
+This writes a dashboard-aligned default:
+`top-left=weather`, `top-right=ai-status`, `middle=calendar`, and
+`bottom=todo`, with a `30m` work-hours cadence. Use flags to reflect the
+user's answer, for example:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3 --city Shanghai --cadence 15m --hours 08-22
+```
+
 Write this shape (replace based on user input):
 
 ```yaml

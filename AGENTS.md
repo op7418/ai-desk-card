@@ -756,6 +756,41 @@ git diff --check
 
 All passed; `git diff --check` only reported LF-to-CRLF warnings.
 - Startup waiting/dashboard firmware page real-device acceptance is complete.
+
+PaperS3 flow-parity polish after final startup acceptance:
+
+- Goal: make PaperS3 feel like the original GitHub M5Paper V1.1 skill
+  experience: one Agent-led workflow across install, Wi-Fi, first dashboard,
+  interests, scheduled refresh, widget push, and profile-specific sleep.
+- Added `scripts/configure_interests.py`, a small executable helper for
+  flow 04. It writes `~/.ai-desk-card/interests.yaml` without requiring the
+  agent/user to hand-author YAML.
+- Added `scripts/card_cli.py interests --profile paper-s3`, delegating to the
+  helper. The default PaperS3 interests match the first dashboard:
+  `top-left=weather`, `top-right=ai-status`, `middle=calendar`, `bottom=todo`,
+  `cadence=30m`, `hours=08-22`, `days=mon-fri`, `timezone=Asia/Shanghai`.
+- Updated `SKILL.md`, `README.md`, `flows/04_interests.md`, and
+  `plugin/commands/card-onboard.md` so PaperS3 flow 04 uses the executable
+  wrapper after asking the user which cards/cadence they want.
+- Fixed `flows/05_push.md` examples to use string slots such as `top-left`
+  instead of the obsolete numeric `slot=0` shape.
+- Kept PaperS3 capability boundaries intact: Wi-Fi/USB full-frame transport,
+  portrait `540x960`, touch actions, and sleep-card only; no BLE or PaperS3
+  deep sleep was added.
+- Verification after this flow-parity polish:
+
+```powershell
+$env:PYTHONPATH="E:\dev\ai-desk-card;E:\dev\ai-desk-card\.pio-venv\Lib\site-packages"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m unittest discover -s test -p "test_*.py"
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe -m py_compile card_profiles.py daemon\card_daemon.py daemon\card_render.py daemon\card_render_settings.py daemon\card_render_sleep.py scripts\card_cli.py scripts\configure_interests.py scripts\diagnose_device.py scripts\demo_papers3_widgets.py scripts\onboard_papers3.py scripts\collect_papers3_wifi_report.py plugin\skills\card-widget\scripts\push_widget.py tools\push_paper_s3_test_frame.py
+$env:PLATFORMIO_CORE_DIR=".pio-core"
+.\.pio-venv\Scripts\pio.exe run -e paper-s3
+.\.pio-venv\Scripts\pio.exe run -e card
+git diff --check
+```
+
+Results: `unittest` ran 87 tests OK; `py_compile` OK; both PlatformIO
+environments succeeded; `git diff --check` only reported LF-to-CRLF warnings.
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

@@ -111,6 +111,35 @@ def onboard_command(profile: dict, *, root: str = ROOT,
     return cmd
 
 
+def interests_command(profile: dict, *, root: str = ROOT,
+                      output: str | None = None,
+                      slots: str | None = None,
+                      cadence: str | None = None,
+                      hours: str | None = None,
+                      days: str | None = None,
+                      timezone: str | None = None,
+                      city: str | None = None) -> list[str]:
+    cmd = [
+        python_executable(root),
+        os.path.join(root, "scripts", "configure_interests.py"),
+    ]
+    if output:
+        cmd.extend(["--output", output])
+    if slots:
+        cmd.extend(["--slots", slots])
+    if cadence:
+        cmd.extend(["--cadence", cadence])
+    if hours:
+        cmd.extend(["--hours", hours])
+    if days:
+        cmd.extend(["--days", days])
+    if timezone:
+        cmd.extend(["--timezone", timezone])
+    if city:
+        cmd.extend(["--city", city])
+    return cmd
+
+
 def list_serial_ports() -> list[str]:
     try:
         from serial.tools import list_ports
@@ -180,6 +209,16 @@ def main(argv: list[str] | None = None) -> int:
     p_onboard.add_argument("--skip-upload", action="store_true")
     p_onboard.add_argument("--non-interactive", action="store_true")
 
+    p_interests = sub.add_parser("interests", help="Write ~/.ai-desk-card/interests.yaml.")
+    add_profile(p_interests)
+    p_interests.add_argument("--output")
+    p_interests.add_argument("--slots")
+    p_interests.add_argument("--cadence")
+    p_interests.add_argument("--hours")
+    p_interests.add_argument("--days")
+    p_interests.add_argument("--timezone")
+    p_interests.add_argument("--city")
+
     p_ports = sub.add_parser("ports", help="List visible serial ports.")
     p_ports.add_argument("--dry-run", action="store_true")
 
@@ -223,6 +262,17 @@ def main(argv: list[str] | None = None) -> int:
             skip_build=args.skip_build,
             skip_upload=args.skip_upload,
             non_interactive=args.non_interactive,
+        )
+    elif args.command == "interests":
+        cmd = interests_command(
+            profile,
+            output=args.output,
+            slots=args.slots,
+            cadence=args.cadence,
+            hours=args.hours,
+            days=args.days,
+            timezone=args.timezone,
+            city=args.city,
         )
     else:
         parser.error(f"unknown command {args.command}")

@@ -206,7 +206,9 @@ If the user's request implies recurrence ("keep my calendar updated",
 **don't** just push once. Instead:
 
 1. Confirm the cadence + which widgets they want
-2. Write/update `~/.ai-desk-card/interests.yaml` (see flow 04)
+2. Write/update `~/.ai-desk-card/interests.yaml` (see flow 04). For PaperS3
+   on Windows, prefer:
+   `.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3`
 3. Set up the schedule using your agent's native loop primitive:
    - Claude Code: `/loop 30m` or `ScheduleWakeup`
    - Codex / Gemini: equivalent scheduling

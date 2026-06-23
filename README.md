@@ -161,6 +161,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -Conten
 
 # 另开一个 PowerShell，推 demo widget。Wi-Fi 失败时可以临时退回上面的 serial daemon 命令。
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
@@ -257,7 +258,7 @@ Skill 是结构化工作流，Agent 会按下面顺序自动跑（你不用记�
 4. **写偏好 (flow 04)** — 第一次问"你想看哪些卡片，多久刷一次"
 5. **推 widget (flow 05)** — 日常推送的热路径
 6. **设定时 (flow 06)** — Agent 用自己的 loop / cron 定时刷
-7. **息屏 (flow 07)** — 推电子名片 + 设备深度休眠 0 功耗
+7. **息屏 (flow 07)** — 推电子名片 + profile-specific sleep（V1.1 deep sleep；PaperS3 sleep-card）
 
 完整子流程在 [`flows/`](./flows/) 目录。Skill 主路由在 [`SKILL.md`](./SKILL.md)。
 
@@ -295,7 +296,13 @@ Skill 是结构化工作流，Agent 会按下面顺序自动跑（你不用记�
 
 ## 自动刷新（可选）
 
-Skill 第一次问你"想看哪些卡片、什么时段刷"时，会帮你写 `~/.ai-desk-card/interests.yaml`：
+Skill 第一次问你"想看哪些卡片、什么时段刷"时，会帮你写 `~/.ai-desk-card/interests.yaml`。PaperS3 可用 wrapper 生成和首屏 dashboard 一致的默认布局：
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
+```
+
+写出的配置形如：
 
 ```yaml
 version: 1
