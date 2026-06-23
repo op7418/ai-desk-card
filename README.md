@@ -296,7 +296,7 @@ Skill 是结构化工作流，Agent 会按下面顺序自动跑（你不用记�
 
 ## 自动刷新（可选）
 
-Skill 第一次问你"想看哪些卡片、什么时段刷"时，会帮你写 `~/.ai-desk-card/interests.yaml`。PaperS3 可用 wrapper 生成和首屏 dashboard 一致的默认布局：
+Skill 第一次问你"想看哪些卡片、什么时段刷"时，会帮你写 `~/.ai-desk-card/interests.yaml`。默认 V1.1 布局仍是 `weather / calendar / todo / inbox`；PaperS3 可用 wrapper 生成和首屏 dashboard 一致的 `weather / ai-status / calendar / todo`：
 
 ```powershell
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3

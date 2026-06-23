@@ -153,6 +153,8 @@ class CardCliTest(unittest.TestCase):
         self.assertEqual(result, 0)
         command = captured[0][0]
         self.assertIn("configure_interests.py", "/".join(command).replace("\\", "/"))
+        self.assertIn("--profile", command)
+        self.assertIn("paper-s3", command)
         self.assertIn("--city", command)
         self.assertIn("Shanghai", command)
         self.assertTrue(captured[0][1])

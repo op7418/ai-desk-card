@@ -791,6 +791,17 @@ git diff --check
 
 Results: `unittest` ran 87 tests OK; `py_compile` OK; both PlatformIO
 environments succeeded; `git diff --check` only reported LF-to-CRLF warnings.
+
+Follow-up tightening for V1.1 safety:
+
+- `scripts/configure_interests.py` is now profile-aware. Its default
+  `m5paper-v1.1` layout remains the original README-style
+  `weather`, `calendar`, `todo`, `inbox` mapping.
+- `--profile paper-s3` selects the PaperS3 dashboard-aligned
+  `weather`, `ai-status`, `calendar`, `todo` mapping.
+- `scripts/card_cli.py interests --profile ...` passes the profile through to
+  `configure_interests.py`, so the PaperS3 helper does not silently change the
+  M5Paper V1.1 interests flow.
 ## Engineering Rules For This Project
 
 - Keep changes surgical and phase-scoped.

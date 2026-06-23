@@ -8,13 +8,19 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_SLOTS = {
+M5PAPER_V11_DEFAULT_SLOTS = {
+    "top-left": "weather",
+    "top-right": "calendar",
+    "middle": "todo",
+    "bottom": "inbox",
+}
+PAPER_S3_DEFAULT_SLOTS = {
     "top-left": "weather",
     "top-right": "ai-status",
     "middle": "calendar",
     "bottom": "todo",
 }
-VALID_SLOTS = set(DEFAULT_SLOTS)
+VALID_SLOTS = set(M5PAPER_V11_DEFAULT_SLOTS)
 VALID_WIDGETS = {
     "weather",
     "calendar",
@@ -39,9 +45,15 @@ def default_output_path() -> str:
     return str(Path.home() / ".ai-desk-card" / "interests.yaml")
 
 
-def parse_slots(value: str | None) -> dict[str, str]:
+def default_slots_for_profile(profile: str) -> dict[str, str]:
+    if profile == "paper-s3":
+        return dict(PAPER_S3_DEFAULT_SLOTS)
+    return dict(M5PAPER_V11_DEFAULT_SLOTS)
+
+
+def parse_slots(value: str | None, profile: str = "m5paper-v1.1") -> dict[str, str]:
     if not value:
-        return dict(DEFAULT_SLOTS)
+        return default_slots_for_profile(profile)
     slots: dict[str, str] = {}
     for part in value.split(","):
         if "=" not in part:
@@ -64,7 +76,7 @@ def _yaml_string(value: str) -> str:
 
 
 def build_yaml(args: argparse.Namespace) -> str:
-    slots = parse_slots(args.slots)
+    slots = parse_slots(args.slots, args.profile)
     lines = [
         "# ai-desk-card interests. The agent reads this on each refresh tick.",
         "version: 1",
@@ -118,10 +130,16 @@ def run(args: argparse.Namespace) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Write ai-desk-card interests.yaml.")
+    parser.add_argument(
+        "--profile",
+        default="m5paper-v1.1",
+        choices=("m5paper-v1.1", "paper-s3"),
+        help="Select profile-specific default slots.",
+    )
     parser.add_argument("--output", default=default_output_path())
     parser.add_argument(
         "--slots",
-        help="Comma-separated slot=widget map. Default: top-left=weather,top-right=ai-status,middle=calendar,bottom=todo.",
+        help="Comma-separated slot=widget map. Defaults are profile-specific.",
     )
     parser.add_argument("--cadence", default="30m")
     parser.add_argument("--hours", default="08-22")

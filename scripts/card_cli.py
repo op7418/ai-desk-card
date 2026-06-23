@@ -122,6 +122,7 @@ def interests_command(profile: dict, *, root: str = ROOT,
     cmd = [
         python_executable(root),
         os.path.join(root, "scripts", "configure_interests.py"),
+        "--profile", profile["name"],
     ]
     if output:
         cmd.extend(["--output", output])

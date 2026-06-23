@@ -9,18 +9,29 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 
 class ConfigureInterestsTest(unittest.TestCase):
-    def test_default_yaml_matches_papers3_dashboard_layout(self):
+    def test_default_yaml_matches_m5paper_v11_readme_layout(self):
         import configure_interests
 
         args = configure_interests.build_arg_parser().parse_args([])
         text = configure_interests.build_yaml(args)
 
         self.assertIn("top-left: weather", text)
+        self.assertIn("top-right: calendar", text)
+        self.assertIn("middle: todo", text)
+        self.assertIn("bottom: inbox", text)
+        self.assertIn('cadence: "30m"', text)
+        self.assertIn('timezone: "Asia/Shanghai"', text)
+
+    def test_papers3_profile_yaml_matches_dashboard_layout(self):
+        import configure_interests
+
+        args = configure_interests.build_arg_parser().parse_args(["--profile", "paper-s3"])
+        text = configure_interests.build_yaml(args)
+
+        self.assertIn("top-left: weather", text)
         self.assertIn("top-right: ai-status", text)
         self.assertIn("middle: calendar", text)
         self.assertIn("bottom: todo", text)
-        self.assertIn('cadence: "30m"', text)
-        self.assertIn('timezone: "Asia/Shanghai"', text)
 
     def test_writes_interests_yaml_to_requested_path(self):
         import configure_interests
@@ -29,6 +40,7 @@ class ConfigureInterestsTest(unittest.TestCase):
             out = os.path.join(tmp, "interests.yaml")
             args = configure_interests.build_arg_parser().parse_args([
                 "--output", out,
+                "--profile", "paper-s3",
                 "--city", "Shanghai",
                 "--cadence", "15m",
             ])
@@ -47,13 +59,13 @@ class ConfigureInterestsTest(unittest.TestCase):
         args = configure_interests.build_arg_parser().parse_args([
             "--slots", "top-left=weather,top-right=calendar,middle=todo,bottom=inbox",
         ])
-        slots = configure_interests.parse_slots(args.slots)
+        slots = configure_interests.parse_slots(args.slots, args.profile)
 
         self.assertEqual(slots["top-right"], "calendar")
         self.assertEqual(slots["bottom"], "inbox")
 
         with self.assertRaises(SystemExit):
-            configure_interests.parse_slots("left=weather")
+            configure_interests.parse_slots("left=weather", args.profile)
 
 
 if __name__ == "__main__":
