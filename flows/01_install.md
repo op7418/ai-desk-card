@@ -92,13 +92,17 @@ step, then switch to Wi-Fi:
 $body = @{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body $body
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3 --city Shanghai
+.\.pio-venv\Scripts\python.exe scripts\configure_profile.py --name "Your Name" --city Shanghai
+.\.pio-venv\Scripts\python.exe scripts\push_configured_dashboard.py
 .\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 ```
 
-The first successful post-install push should be `dashboard`, not `text`.
+The first successful post-install push should be the configured dashboard, not
+`text` or a demo/mock dashboard.
 The firmware waiting/dashboard screen is normal immediately after flashing
-or rebooting; it should be replaced once the daemon pushes the dashboard frame.
+or rebooting; it should be replaced once the daemon pushes the configured
+dashboard frame.
 
 Total ~60 seconds the second time; the first run downloads toolchains.
 Echo each command's outcome to the user.

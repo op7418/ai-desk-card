@@ -3,7 +3,9 @@
 
 This is intentionally a thin orchestrator around the commands that already
 exist in the repo. It does not render dashboard frames itself; it starts the
-daemon and then asks ``demo_papers3_widgets.py`` to push the first dashboard.
+daemon, delegates flow 04 setup to ``configure_interests.py`` and
+``configure_profile.py``, then asks ``push_configured_dashboard.py`` to push a
+first dashboard from those user settings.
 """
 from __future__ import annotations
 
@@ -160,6 +162,49 @@ def resolve_wifi_credentials(args: argparse.Namespace) -> tuple[str, str] | None
             raise SystemExit("--wifi-password or CARD_WIFI_PASSWORD is required in --non-interactive mode")
         password = getpass.getpass("Wi-Fi password: ")
     return ssid, password
+
+
+def _prompt_optional(args: argparse.Namespace, attr: str, prompt: str) -> None:
+    if getattr(args, attr):
+        return
+    if not sys.stdin.isatty():
+        return
+    try:
+        value = input(prompt).strip()
+    except EOFError:
+        return
+    if value:
+        setattr(args, attr, value)
+
+
+def resolve_flow04_inputs(args: argparse.Namespace) -> None:
+    if not args.skip_interests and not args.city:
+        if args.non_interactive:
+            raise SystemExit("--city is required for PaperS3 onboard flow 04 weather setup")
+        args.city = input("Weather location / city: ").strip()
+        if not args.city:
+            raise SystemExit("weather location is required for PaperS3 onboard flow 04")
+
+    if args.skip_card_profile:
+        return
+
+    if not args.card_name:
+        if args.non_interactive:
+            raise SystemExit("--card-name is required for PaperS3 onboard flow 04 sleep-card setup")
+        args.card_name = input("Sleep-card name: ").strip()
+        if not args.card_name:
+            raise SystemExit("sleep-card name is required for PaperS3 onboard flow 04")
+
+    if args.city and not args.card_city:
+        args.card_city = args.city
+
+    if not args.non_interactive:
+        _prompt_optional(args, "card_tagline", "Sleep-card tagline: ")
+        _prompt_optional(args, "card_bio", "Sleep-card bio lines, separated by |: ")
+        _prompt_optional(args, "card_city", "Sleep-card city tag: ")
+        _prompt_optional(args, "card_link", "Sleep-card web/link tag: ")
+        _prompt_optional(args, "card_qr_label", "Sleep-card QR label: ")
+        _prompt_optional(args, "card_footer", "Sleep-card footer: ")
 
 
 def _probe_current_state(daemon_url: str, request_json=_request_json) -> dict:
@@ -332,14 +377,71 @@ def run(args: argparse.Namespace, *,
     else:
         _log_step("no Wi-Fi host known; keeping serial daemon for first dashboard push")
 
+    resolve_flow04_inputs(args)
+
+    if args.skip_interests:
+        _log_step("flow 04 interests: skipped")
+    else:
+        code = _run_command(
+            "flow 04 configure interests",
+            card_cli.interests_command(
+                profile,
+                root=ROOT,
+                output=args.interests_output,
+                slots=args.interests_slots,
+                cadence=args.cadence,
+                hours=args.hours,
+                days=args.days,
+                timezone=args.timezone,
+                city=args.city,
+                non_interactive=args.non_interactive,
+                require_weather_location=True,
+            ),
+            dry_run=args.dry_run,
+            call=call,
+        )
+        if code != 0:
+            return code
+
+    if args.skip_card_profile:
+        _log_step("flow 04 sleep-card profile: skipped")
+    else:
+        code = _run_command(
+            "flow 04 configure sleep-card profile",
+            card_cli.profile_command(
+                profile,
+                root=ROOT,
+                name=args.card_name,
+                tagline=args.card_tagline,
+                bio=args.card_bio,
+                city=args.card_city,
+                link=args.card_link,
+                qr_label=args.card_qr_label,
+                footer=args.card_footer,
+                non_interactive=args.non_interactive,
+            ),
+            dry_run=args.dry_run,
+            call=call,
+        )
+        if code != 0:
+            return code
+
     code = _run_command(
-        "push first dashboard",
-        card_cli.demo_command(profile, "dashboard", root=ROOT),
+        "push configured dashboard",
+        card_cli.configured_dashboard_command(profile, root=ROOT, interests=args.interests_output),
         dry_run=args.dry_run,
         call=call,
     )
     if code != 0:
         return code
+
+    if args.skip_schedule:
+        _log_step("flow 06 schedule handoff: skipped")
+    else:
+        _log_step(
+            "flow 06 schedule handoff: register an agent loop using "
+            "~/.ai-desk-card/interests.yaml"
+        )
 
     _log_step("sleep-card profile is assets/profile.yaml; dashboard remains on screen after onboarding")
     if args.push_sleep_card and not args.dry_run:
@@ -357,7 +459,7 @@ def run(args: argparse.Namespace, *,
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Onboard PaperS3 and push the first dashboard.")
+    parser = argparse.ArgumentParser(description="Onboard PaperS3 and push the configured first dashboard.")
     parser.add_argument("--profile", default="paper-s3", choices=("paper-s3",))
     parser.add_argument("--port", default="COM3")
     parser.add_argument("--host", help="Known PaperS3 Wi-Fi IP; skips waiting for reported IP.")
@@ -371,6 +473,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-upload", action="store_true")
+    parser.add_argument("--skip-interests", action="store_true")
+    parser.add_argument("--skip-card-profile", action="store_true")
+    parser.add_argument("--skip-schedule", action="store_true")
+    parser.add_argument("--interests-output")
+    parser.add_argument("--interests-slots")
+    parser.add_argument("--cadence", default="30m")
+    parser.add_argument("--hours", default="08-22")
+    parser.add_argument("--days", default="mon-fri")
+    parser.add_argument("--timezone")
+    parser.add_argument("--city")
+    parser.add_argument("--card-name")
+    parser.add_argument("--card-tagline")
+    parser.add_argument("--card-bio")
+    parser.add_argument("--card-city")
+    parser.add_argument("--card-link")
+    parser.add_argument("--card-qr-label")
+    parser.add_argument("--card-footer")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-dir")
     parser.add_argument("--daemon-timeout", type=float, default=30.0)

@@ -4,6 +4,12 @@ The user wants scheduled / auto-refresh pushes but
 `interests.configured == false`. Build a one-time `interests.yaml` that
 captures what they care about + how often + when.
 
+PaperS3 first-time/onboard requests are also an explicit trigger for this
+flow, even when an existing `~/.ai-desk-card/interests.yaml` is present. In
+that case, ask whether to rewrite flow 04 inputs or preserve the existing
+files. Do not silently skip flow 04 just because the daemon is healthy or a
+weather-only config exists.
+
 ## Step 1 — Ask the user
 
 Ask in one round, accept any subset:
@@ -20,6 +26,16 @@ Ask in one round, accept any subset:
 Capture user preferences. Don't over-ask — if they say "the defaults are
 fine", use them.
 
+For first-time PaperS3 onboarding, also ask for the concrete data needed by
+the first configured dashboard:
+
+- weather location/city for the weather widget
+- sleep-card business card name, plus optional tagline, short bio, city/link
+  tags, QR label, and footer
+
+Do this before pushing the first dashboard. The first dashboard should be built
+from these answers, not from demo/mock widget data.
+
 ## Step 2 — Write the YAML
 
 Path: `~/.ai-desk-card/interests.yaml`. Create the directory if missing:
@@ -34,6 +50,13 @@ PaperS3 / Windows shortcut after asking the user:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
 ```
 
+PaperS3 onboarding runs this command by default before the first dashboard
+push. Use the standalone command to revise preferences, or pass
+`--skip-interests` to onboarding when an existing interests file must be
+preserved. Pass `--skip-card-profile` only when preserving the existing
+sleep-card `assets/profile.yaml`. Only use those skip flags after the user
+explicitly chooses to preserve the current files.
+
 This writes a dashboard-aligned default:
 `top-left=weather`, `top-right=ai-status`, `middle=calendar`, and
 `bottom=todo`, with a `30m` work-hours cadence. Use flags to reflect the
@@ -41,6 +64,7 @@ user's answer, for example:
 
 ```powershell
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3 --city Shanghai --cadence 15m --hours 08-22
+.\.pio-venv\Scripts\python.exe scripts\configure_profile.py --name "Your Name" --city Shanghai --link "example.com/you"
 ```
 
 Write this shape (replace based on user input):
@@ -95,6 +119,12 @@ Tell the user where you wrote it and that they can edit it any time
 
 After writing, push a one-shot refresh so the user sees the result
 immediately:
+
+For PaperS3 onboarding, use the configured dashboard helper:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\push_configured_dashboard.py
+```
 
 ```bash
 # The schedule kicks in at the next cron / loop tick, but do one now

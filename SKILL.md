@@ -121,21 +121,36 @@ For PaperS3 on Windows 11 PowerShell, prefer these profile-aware commands:
 [System.IO.Ports.SerialPort]::GetPortNames()
 # Preferred first install / post-flash wrapper for PaperS3:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+# Non-interactive PaperS3 onboard must include flow 04 inputs:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --city Shanghai --card-name "Your Name" --non-interactive
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport serial --port COM3
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -ContentType "application/json" -Body (@{ssid="<2.4GHz Wi-Fi SSID>"; password="<Wi-Fi password>"} | ConvertTo-Json)
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+.\.pio-venv\Scripts\python.exe scripts\push_configured_dashboard.py
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "application/json" -Body "{}"
 .\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 .\.pio-venv\Scripts\python.exe scripts\collect_papers3_wifi_report.py --host <PaperS3-IP>
 ```
 
 The PaperS3 firmware shows a formal waiting/dashboard screen after flashing
-or rebooting. The first setup flow should start the daemon and push
-`dashboard` as the first real widget card, replacing that waiting screen.
+or rebooting. The first setup flow should start the daemon, ask flow 04 inputs
+(weather location and sleep-card business card), write
+`~/.ai-desk-card/interests.yaml` plus `assets/profile.yaml`, and push the
+configured dashboard as the first real widget card, replacing that waiting
+screen. Use `--skip-interests --skip-card-profile` only for an
+already-configured setup **after the user explicitly says to preserve the
+existing files**. Do not infer that choice from a healthy daemon, an existing
+`interests.yaml`, or a current screen that looks good.
+
+PaperS3 onboard completion rule: when the user explicitly asks for PaperS3
+onboard / first setup, do not stop after probe-only health checks. If
+`~/.ai-desk-card/interests.yaml` or `assets/profile.yaml` already exists, ask
+whether to rewrite flow 04 inputs or preserve them. Default to the normal
+onboard wrapper and only pass `--skip-interests --skip-card-profile` after the
+user chooses preserve.
 
 Otherwise (default) use the **V1.1 path** through the routing table below.
 
@@ -154,6 +169,7 @@ re-probe.
 | `daemon.running == false` and profile is `paper-s3` and Wi-Fi IP is known | Start PaperS3 Wi-Fi daemon | `python daemon/card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0` |
 | `daemon.running == false` and profile is `paper-s3` before Wi-Fi provisioning | Start PaperS3 serial daemon | `python daemon/card_daemon.py --profile paper-s3 --transport serial --port <COM port>` |
 | `daemon.running == false` | Start the daemon | `bash $SKILL_DIR/plugin/scripts/start.sh` |
+| user explicitly asked for PaperS3 onboard / first setup | Ask rewrite-or-preserve for flow 04; by default collect weather location + sleep-card business card, then run PaperS3 onboard wrapper | [flows/04_interests.md](flows/04_interests.md) |
 | `device.alive == false` AND `transport.connected == false` | Device unreachable — could be asleep, off, BLE not paired. Tell user, suggest physical wake (tap rotary / plug USB) | [flows/02_transport.md](flows/02_transport.md) |
 | `device.alive == false` AND `transport.connected == true` (daemon connected something but no status_report in 90s) | Device transport up but not responding — restart daemon, then probe | [flows/02_transport.md](flows/02_transport.md) |
 | `wifi.provisioned == false` (and user wants always-on or battery mode) | Provision Wi-Fi | [flows/03_wifi.md](flows/03_wifi.md) |
@@ -209,6 +225,9 @@ If the user's request implies recurrence ("keep my calendar updated",
 2. Write/update `~/.ai-desk-card/interests.yaml` (see flow 04). For PaperS3
    on Windows, prefer:
    `.\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3`
+   During first-time PaperS3 onboard, flow 04 also writes
+   `assets/profile.yaml` for the sleep-card business card before the first
+   configured dashboard push.
 3. Set up the schedule using your agent's native loop primitive:
    - Claude Code: `/loop 30m` or `ScheduleWakeup`
    - Codex / Gemini: equivalent scheduling

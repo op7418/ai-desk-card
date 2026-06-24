@@ -129,6 +129,65 @@ class CardCliTest(unittest.TestCase):
         self.assertIn("192.168.137.253", command)
         self.assertTrue(captured[0][1])
 
+    def test_onboard_command_can_skip_interests(self):
+        import card_cli
+
+        captured = []
+        old_run_or_print = card_cli._run_or_print
+
+        def fake_run_or_print(cmd, dry_run):
+            captured.append((cmd, dry_run))
+            return 0
+
+        card_cli._run_or_print = fake_run_or_print
+        try:
+            result = card_cli.main([
+                "onboard",
+                "--profile", "paper-s3",
+                "--skip-interests",
+                "--dry-run",
+            ])
+        finally:
+            card_cli._run_or_print = old_run_or_print
+
+        self.assertEqual(result, 0)
+        self.assertIn("--skip-interests", captured[0][0])
+
+    def test_onboard_command_forwards_flow04_inputs(self):
+        import card_cli
+
+        captured = []
+        old_run_or_print = card_cli._run_or_print
+
+        def fake_run_or_print(cmd, dry_run):
+            captured.append((cmd, dry_run))
+            return 0
+
+        card_cli._run_or_print = fake_run_or_print
+        try:
+            result = card_cli.main([
+                "onboard",
+                "--profile", "paper-s3",
+                "--city", "Shanghai",
+                "--card-name", "Lucy",
+                "--card-tagline", "AI desk card builder",
+                "--card-link", "example.com/lucy",
+                "--dry-run",
+            ])
+        finally:
+            card_cli._run_or_print = old_run_or_print
+
+        self.assertEqual(result, 0)
+        command = captured[0][0]
+        self.assertIn("--city", command)
+        self.assertIn("Shanghai", command)
+        self.assertIn("--card-name", command)
+        self.assertIn("Lucy", command)
+        self.assertIn("--card-tagline", command)
+        self.assertIn("AI desk card builder", command)
+        self.assertIn("--card-link", command)
+        self.assertIn("example.com/lucy", command)
+
     def test_interests_command_delegates_to_configure_interests(self):
         import card_cli
 

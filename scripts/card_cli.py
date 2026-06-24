@@ -84,13 +84,76 @@ def demo_command(profile: dict, widget: str, *, root: str = ROOT) -> list[str]:
     ]
 
 
+def configured_dashboard_command(profile: dict, *, root: str = ROOT,
+                                 interests: str | None = None) -> list[str]:
+    cmd = [
+        python_executable(root),
+        os.path.join(root, "scripts", "push_configured_dashboard.py"),
+    ]
+    if interests:
+        cmd.extend(["--interests", interests])
+    return cmd
+
+
+def profile_command(profile: dict, *, root: str = ROOT,
+                    output: str | None = None,
+                    name: str | None = None,
+                    tagline: str | None = None,
+                    bio: str | None = None,
+                    city: str | None = None,
+                    link: str | None = None,
+                    qr_label: str | None = None,
+                    footer: str | None = None,
+                    non_interactive: bool = False) -> list[str]:
+    cmd = [
+        python_executable(root),
+        os.path.join(root, "scripts", "configure_profile.py"),
+    ]
+    if output:
+        cmd.extend(["--output", output])
+    if name:
+        cmd.extend(["--name", name])
+    if tagline:
+        cmd.extend(["--tagline", tagline])
+    if bio:
+        cmd.extend(["--bio", bio])
+    if city:
+        cmd.extend(["--city", city])
+    if link:
+        cmd.extend(["--link", link])
+    if qr_label:
+        cmd.extend(["--qr-label", qr_label])
+    if footer:
+        cmd.extend(["--footer", footer])
+    if non_interactive:
+        cmd.append("--non-interactive")
+    return cmd
+
+
 def onboard_command(profile: dict, *, root: str = ROOT,
                     port: str | None = None,
                     host: str | None = None,
                     no_wifi: bool = False,
                     skip_build: bool = False,
                     skip_upload: bool = False,
-                    non_interactive: bool = False) -> list[str]:
+                    non_interactive: bool = False,
+                    skip_interests: bool = False,
+                    skip_card_profile: bool = False,
+                    skip_schedule: bool = False,
+                    interests_output: str | None = None,
+                    interests_slots: str | None = None,
+                    cadence: str | None = None,
+                    hours: str | None = None,
+                    days: str | None = None,
+                    timezone: str | None = None,
+                    city: str | None = None,
+                    card_name: str | None = None,
+                    card_tagline: str | None = None,
+                    card_bio: str | None = None,
+                    card_city: str | None = None,
+                    card_link: str | None = None,
+                    card_qr_label: str | None = None,
+                    card_footer: str | None = None) -> list[str]:
     cmd = [
         python_executable(root),
         os.path.join(root, "scripts", "onboard_papers3.py"),
@@ -108,6 +171,40 @@ def onboard_command(profile: dict, *, root: str = ROOT,
         cmd.append("--skip-upload")
     if non_interactive:
         cmd.append("--non-interactive")
+    if skip_interests:
+        cmd.append("--skip-interests")
+    if skip_card_profile:
+        cmd.append("--skip-card-profile")
+    if skip_schedule:
+        cmd.append("--skip-schedule")
+    if interests_output:
+        cmd.extend(["--interests-output", interests_output])
+    if interests_slots:
+        cmd.extend(["--interests-slots", interests_slots])
+    if cadence:
+        cmd.extend(["--cadence", cadence])
+    if hours:
+        cmd.extend(["--hours", hours])
+    if days:
+        cmd.extend(["--days", days])
+    if timezone:
+        cmd.extend(["--timezone", timezone])
+    if city:
+        cmd.extend(["--city", city])
+    if card_name:
+        cmd.extend(["--card-name", card_name])
+    if card_tagline:
+        cmd.extend(["--card-tagline", card_tagline])
+    if card_bio:
+        cmd.extend(["--card-bio", card_bio])
+    if card_city:
+        cmd.extend(["--card-city", card_city])
+    if card_link:
+        cmd.extend(["--card-link", card_link])
+    if card_qr_label:
+        cmd.extend(["--card-qr-label", card_qr_label])
+    if card_footer:
+        cmd.extend(["--card-footer", card_footer])
     return cmd
 
 
@@ -118,7 +215,9 @@ def interests_command(profile: dict, *, root: str = ROOT,
                       hours: str | None = None,
                       days: str | None = None,
                       timezone: str | None = None,
-                      city: str | None = None) -> list[str]:
+                      city: str | None = None,
+                      non_interactive: bool = False,
+                      require_weather_location: bool = False) -> list[str]:
     cmd = [
         python_executable(root),
         os.path.join(root, "scripts", "configure_interests.py"),
@@ -138,6 +237,10 @@ def interests_command(profile: dict, *, root: str = ROOT,
         cmd.extend(["--timezone", timezone])
     if city:
         cmd.extend(["--city", city])
+    if non_interactive:
+        cmd.append("--non-interactive")
+    if require_weather_location:
+        cmd.append("--require-weather-location")
     return cmd
 
 
@@ -209,6 +312,23 @@ def main(argv: list[str] | None = None) -> int:
     p_onboard.add_argument("--skip-build", action="store_true")
     p_onboard.add_argument("--skip-upload", action="store_true")
     p_onboard.add_argument("--non-interactive", action="store_true")
+    p_onboard.add_argument("--skip-interests", action="store_true")
+    p_onboard.add_argument("--skip-card-profile", action="store_true")
+    p_onboard.add_argument("--skip-schedule", action="store_true")
+    p_onboard.add_argument("--interests-output")
+    p_onboard.add_argument("--interests-slots")
+    p_onboard.add_argument("--cadence")
+    p_onboard.add_argument("--hours")
+    p_onboard.add_argument("--days")
+    p_onboard.add_argument("--timezone")
+    p_onboard.add_argument("--city")
+    p_onboard.add_argument("--card-name")
+    p_onboard.add_argument("--card-tagline")
+    p_onboard.add_argument("--card-bio")
+    p_onboard.add_argument("--card-city")
+    p_onboard.add_argument("--card-link")
+    p_onboard.add_argument("--card-qr-label")
+    p_onboard.add_argument("--card-footer")
 
     p_interests = sub.add_parser("interests", help="Write ~/.ai-desk-card/interests.yaml.")
     add_profile(p_interests)
@@ -263,6 +383,23 @@ def main(argv: list[str] | None = None) -> int:
             skip_build=args.skip_build,
             skip_upload=args.skip_upload,
             non_interactive=args.non_interactive,
+            skip_interests=args.skip_interests,
+            skip_card_profile=args.skip_card_profile,
+            skip_schedule=args.skip_schedule,
+            interests_output=args.interests_output,
+            interests_slots=args.interests_slots,
+            cadence=args.cadence,
+            hours=args.hours,
+            days=args.days,
+            timezone=args.timezone,
+            city=args.city,
+            card_name=args.card_name,
+            card_tagline=args.card_tagline,
+            card_bio=args.card_bio,
+            card_city=args.card_city,
+            card_link=args.card_link,
+            card_qr_label=args.card_qr_label,
+            card_footer=args.card_footer,
         )
     elif args.command == "interests":
         cmd = interests_command(

@@ -135,11 +135,21 @@ cd E:\dev\ai-desk-card
 $env:PLATFORMIO_CORE_DIR=".pio-core"
 # Recommended first install / post-flash wrapper for PaperS3.
 # It probes, builds/uploads unless skipped, starts the serial daemon,
-# provisions Wi-Fi when needed, switches to the Wi-Fi daemon, and pushes dashboard.
+# provisions Wi-Fi when needed, switches to Wi-Fi, asks flow 04 inputs
+# (weather location + sleep-card business card), writes the PaperS3
+# interests/profile files, pushes the configured dashboard, and hands off
+# the schedule step.
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+
+# Non-interactive example with the required flow 04 inputs:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --city Shanghai --card-name "Lucy" --card-link "example.com/lucy" --non-interactive
 
 # If Wi-Fi is already provisioned and the PaperS3 IP is known:
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --host 192.168.137.253
+
+# Existing setups can preserve both flow 04 files, but only after the user
+# explicitly chooses preserve instead of rewrite:
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3 --host 192.168.137.253 --skip-interests --skip-card-profile
 
 # 查看 COM 口
 [System.IO.Ports.SerialPort]::GetPortNames()
@@ -159,12 +169,11 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/provision-wifi -Conten
 # 等串口日志出现 [wifi] connected ip=...，记下 PaperS3 IP，然后重启 daemon 走 Wi-Fi。
 .\.pio-venv\Scripts\python.exe daemon\card_daemon.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
 
-# 另开一个 PowerShell，推 demo widget。Wi-Fi 失败时可以临时退回上面的 serial daemon 命令。
-.\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3
+# 另开一个 PowerShell，推 configured dashboard 或 demo widget。Wi-Fi 失败时可以临时退回上面的 serial daemon 命令。
+.\.pio-venv\Scripts\python.exe scripts\push_configured_dashboard.py
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py interests --profile paper-s3
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\card_cli.py demo --profile paper-s3 --widget text
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
@@ -203,7 +212,7 @@ PaperS3 当前限制：BLE 暂不支持，deep sleep 暂不支持。Stage 8 已�
 PaperS3 最终验收建议：
 
 ```powershell
-.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget dashboard
+.\.pio-venv\Scripts\python.exe scripts\push_configured_dashboard.py
 .\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9877/sleep -ContentType "application/json" -Body "{}"
 .\.pio-venv\Scripts\python.exe scripts\diagnose_device.py --profile paper-s3 --transport wifi --host <PaperS3-IP> --wifi-port 9880 --http-host 0.0.0.0
@@ -259,6 +268,13 @@ Skill 是结构化工作流，Agent 会按下面顺序自动跑（你不用记�
 5. **推 widget (flow 05)** — 日常推送的热路径
 6. **设定时 (flow 06)** — Agent 用自己的 loop / cron 定时刷
 7. **息屏 (flow 07)** — 推电子名片 + profile-specific sleep（V1.1 deep sleep；PaperS3 sleep-card）
+
+PaperS3 `scripts\card_cli.py onboard --profile paper-s3 ...` follows the same
+user-facing sequence: it probes, installs/provisions when needed, asks flow 04
+inputs (weather location plus sleep-card business card), writes the PaperS3
+dashboard-aligned interests/profile files, pushes the configured first
+dashboard, and then hands flow 06 back to the Agent scheduler. It does not
+enable PaperS3 BLE or deep sleep.
 
 完整子流程在 [`flows/`](./flows/) 目录。Skill 主路由在 [`SKILL.md`](./SKILL.md)。
 

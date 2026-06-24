@@ -53,6 +53,8 @@ class OnboardPaperS3Test(unittest.TestCase):
             "--port", "COM3",
             "--wifi-ssid", "DeskNet",
             "--wifi-password", "secret-password",
+            "--city", "Shanghai",
+            "--card-name", "Lucy",
             "--skip-build",
             "--skip-upload",
             "--wifi-timeout", "1",
@@ -78,7 +80,11 @@ class OnboardPaperS3Test(unittest.TestCase):
         self.assertIn("--http-host", popens[1].cmd)
         self.assertIn("0.0.0.0", popens[1].cmd)
         self.assertTrue(popens[0].terminated)
-        self.assertIn("dashboard", calls[-1])
+        rendered_calls = [" ".join(cmd).replace("\\", "/") for cmd in calls]
+        self.assertIn("configure_interests.py", rendered_calls[0])
+        self.assertIn("configure_profile.py", rendered_calls[1])
+        self.assertIn("push_configured_dashboard.py", rendered_calls[2])
+        self.assertNotIn("demo_papers3_widgets.py", " ".join(rendered_calls))
         self.assertIn(("POST", "/provision-wifi", {
             "ssid": "DeskNet",
             "password": "secret-password",
@@ -114,6 +120,8 @@ class OnboardPaperS3Test(unittest.TestCase):
             "--port", "COM3",
             "--host", "192.168.137.253",
             "--non-interactive",
+            "--city", "Shanghai",
+            "--card-name", "Lucy",
             "--skip-build",
             "--skip-upload",
             "--daemon-timeout", "1",
@@ -130,7 +138,113 @@ class OnboardPaperS3Test(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(popens, [])
         self.assertNotIn("/provision-wifi", [path for _, path, _ in requests])
-        self.assertIn("dashboard", calls[-1])
+        rendered_calls = [" ".join(cmd).replace("\\", "/") for cmd in calls]
+        self.assertIn("configure_interests.py", rendered_calls[0])
+        self.assertIn("configure_profile.py", rendered_calls[1])
+        self.assertIn("push_configured_dashboard.py", rendered_calls[2])
+        self.assertNotIn("demo_papers3_widgets.py", " ".join(rendered_calls))
+
+    def test_onboard_writes_papers3_interests_after_dashboard_by_default(self):
+        import onboard_papers3
+
+        calls = []
+        requests = []
+
+        def fake_call(cmd, cwd=None):
+            calls.append(cmd)
+            return 0
+
+        def fake_request(method, daemon_url, path, payload=None, timeout=4.0):
+            requests.append((method, path, payload))
+            if path == "/pair-status":
+                return 200, {"connected": True, "transport": "WiFiTransport"}
+            if path == "/heartbeat":
+                return 200, {"alive": True, "wifi_ip": "192.168.137.253"}
+            return 200, {"ok": True}
+
+        args = onboard_papers3.build_arg_parser().parse_args([
+            "--port", "COM3",
+            "--host", "192.168.137.253",
+            "--non-interactive",
+            "--city", "Shanghai",
+            "--card-name", "Lucy",
+            "--skip-build",
+            "--skip-upload",
+            "--daemon-timeout", "1",
+        ])
+
+        result = onboard_papers3.run(
+            args,
+            call=fake_call,
+            popen=lambda cmd, **kwargs: FakeProc(cmd),
+            request_json=fake_request,
+            sleep=lambda seconds: None,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertIn("configure_interests.py", "/".join(calls[0]).replace("\\", "/"))
+        self.assertIn("--profile", calls[0])
+        self.assertIn("paper-s3", calls[0])
+        self.assertIn("--city", calls[0])
+        self.assertIn("Shanghai", calls[0])
+        self.assertIn("--cadence", calls[0])
+        self.assertIn("30m", calls[0])
+        self.assertIn("configure_profile.py", "/".join(calls[1]).replace("\\", "/"))
+        self.assertIn("--name", calls[1])
+        self.assertIn("Lucy", calls[1])
+        self.assertIn("push_configured_dashboard.py", "/".join(calls[2]).replace("\\", "/"))
+
+    def test_onboard_can_skip_interests_for_existing_setups(self):
+        import onboard_papers3
+
+        calls = []
+
+        def fake_call(cmd, cwd=None):
+            calls.append(cmd)
+            return 0
+
+        def fake_request(method, daemon_url, path, payload=None, timeout=4.0):
+            if path == "/pair-status":
+                return 200, {"connected": True, "transport": "WiFiTransport"}
+            if path == "/heartbeat":
+                return 200, {"alive": True, "wifi_ip": "192.168.137.253"}
+            return 200, {"ok": True}
+
+        args = onboard_papers3.build_arg_parser().parse_args([
+            "--port", "COM3",
+            "--host", "192.168.137.253",
+            "--non-interactive",
+            "--skip-build",
+            "--skip-upload",
+            "--skip-interests",
+            "--skip-card-profile",
+        ])
+
+        result = onboard_papers3.run(
+            args,
+            call=fake_call,
+            popen=lambda cmd, **kwargs: FakeProc(cmd),
+            request_json=fake_request,
+            sleep=lambda seconds: None,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("push_configured_dashboard.py", "/".join(calls[0]).replace("\\", "/"))
+
+    def test_noninteractive_requires_flow04_inputs(self):
+        import onboard_papers3
+
+        args = onboard_papers3.build_arg_parser().parse_args([
+            "--port", "COM3",
+            "--host", "192.168.137.253",
+            "--non-interactive",
+            "--skip-build",
+            "--skip-upload",
+        ])
+
+        with self.assertRaises(SystemExit):
+            onboard_papers3.resolve_flow04_inputs(args)
 
     def test_noninteractive_requires_wifi_password_when_wifi_is_enabled(self):
         import onboard_papers3

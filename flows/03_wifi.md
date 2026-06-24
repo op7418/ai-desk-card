@@ -28,9 +28,13 @@ flash — never on the daemon side, never in git.
 
 PaperS3 Windows shortcut: `scripts\card_cli.py onboard --profile paper-s3 --port COM3`
 performs this provisioning step through the serial daemon, then restarts the
-daemon with `--transport wifi --http-host 0.0.0.0` and pushes the first
-dashboard. If the PaperS3 is already provisioned, pass `--host <PaperS3-IP>`
-to skip re-entering credentials.
+daemon with `--transport wifi --http-host 0.0.0.0`. It then continues into
+flow 04 by asking for the weather location and sleep-card business card
+fields, writing dashboard-aligned PaperS3 interests/profile files, and pushing
+the configured first dashboard. It then prints the flow 06 scheduling handoff. If the
+PaperS3 is already provisioned, pass `--host <PaperS3-IP>` to skip re-entering
+credentials; pass `--skip-interests --skip-card-profile` only when preserving
+existing flow 04 files.
 
 ## Step 3 — Wait for connect
 

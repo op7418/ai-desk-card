@@ -76,6 +76,13 @@
           "status": "unsupported",
           "reason": "M5Paper V1.1 BLE exists, but PaperS3 BLE is not wired into this profile"
         }
+      },
+      "onboarding": {
+        "first_dashboard": "configured-dashboard",
+        "configure_interests_before_dashboard": true,
+        "configure_profile_before_dashboard": true,
+        "schedule_handoff_after_interests": true,
+        "sleep_flow": "sleep-card"
       }
     }
   }

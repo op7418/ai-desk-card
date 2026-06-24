@@ -167,9 +167,9 @@ def header_bar(d: ImageDraw.ImageDraw, rect, label: str, meta: str = ""):
     headers themselves). This lighter treatment keeps the type label
     visible without the section-divider look."""
     x, y, w, h = rect
-    bar_h = 52
+    bar_h = 58
     # Label on white background (black text).
-    d.text((x + PADDING, y + 14), label.upper(),
+    d.text((x + PADDING, y + 14), label,
            fill=INK_BLACK, font=font_header())
     if meta:
         meta_bbox = d.textbbox((0, 0), meta, font=font())
@@ -286,8 +286,13 @@ def _resolve_widget(slot_name, widget_snapshot):
 
 def paint_weather(d, rect, data, stale=False):
     x, y, w, h = rect
-    next_y = header_bar(d, rect, "WEATHER", data.get("location", "") or "")
+    next_y = header_bar(d, rect, "WEATHER")
     next_y += PADDING
+
+    location = data.get("location", "") or ""
+    if location:
+        next_y = body_text(d, x + PADDING, next_y, w - 2 * PADDING, location, bold=True)
+        next_y += 4
 
     cur = data.get("current") or {}
     if cur:
@@ -358,17 +363,9 @@ def paint_messages(d, rect, data, stale=False):
 def paint_ai_status(d, rect, data, stale=False):
     x, y, w, h = rect
     session = data.get("session_name", "")
-    next_y = header_bar(d, rect, "AI", session)
-    next_y += PADDING
-
     model = data.get("model", "")
-    if model:
-        next_y = body_text(d, x + PADDING, next_y, w - 2 * PADDING, model, bold=True)
-
-    task = data.get("task", "")
-    if task:
-        next_y = wrapped_text(d, x + PADDING, next_y, w - 2 * PADDING, BODY_SIZE * 2 + 16, task)
-        next_y += 8
+    next_y = header_bar(d, rect, session or "AI", f"({model})" if model else "")
+    next_y += PADDING
 
     usage = data.get("usage") or {}
     usage_lines = [
@@ -389,6 +386,11 @@ def paint_ai_status(d, rect, data, stale=False):
             )
             next_y += 2
         return
+
+    task = data.get("task", "")
+    if task:
+        next_y = wrapped_text(d, x + PADDING, next_y, w - 2 * PADDING, BODY_SIZE * 2 + 16, task)
+        next_y += 8
 
     ctx = data.get("context") or {}
     if ctx.get("limit"):

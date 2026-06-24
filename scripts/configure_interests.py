@@ -75,7 +75,20 @@ def _yaml_string(value: str) -> str:
     return f'"{escaped}"'
 
 
+def resolve_inputs(args: argparse.Namespace, *, input_func=input) -> None:
+    if args.require_weather_location and not args.city:
+        if args.non_interactive:
+            raise SystemExit("--city is required when --require-weather-location is set")
+        args.city = input_func("Weather location / city: ").strip()
+        if not args.city:
+            raise SystemExit("weather location is required")
+    if not args.city:
+        args.city = "Beijing"
+
+
 def build_yaml(args: argparse.Namespace) -> str:
+    if not getattr(args, "city", None):
+        args.city = "Beijing"
     slots = parse_slots(args.slots, args.profile)
     lines = [
         "# ai-desk-card interests. The agent reads this on each refresh tick.",
@@ -117,6 +130,7 @@ def build_yaml(args: argparse.Namespace) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    resolve_inputs(args)
     text = build_yaml(args)
     if args.dry_run:
         print(text, end="")
@@ -145,7 +159,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hours", default="08-22")
     parser.add_argument("--days", default="mon-fri")
     parser.add_argument("--timezone", default=os.environ.get("TZ", "Asia/Shanghai"))
-    parser.add_argument("--city", default="Beijing")
+    parser.add_argument("--city")
     parser.add_argument("--calendar-source", default="macos")
     parser.add_argument("--todo-source", default="reminders")
     parser.add_argument("--inbox-source", default="mail.app")
@@ -155,6 +169,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet-start", default="23:00")
     parser.add_argument("--quiet-end", default="07:00")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--non-interactive", action="store_true")
+    parser.add_argument("--require-weather-location", action="store_true")
     return parser
 
 

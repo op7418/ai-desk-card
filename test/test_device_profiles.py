@@ -31,6 +31,20 @@ class DeviceProfilesTest(unittest.TestCase):
         self.assertEqual(profile["power"]["deep_sleep"]["status"], "unsupported")
         self.assertEqual(profile["power"]["ble"]["status"], "unsupported")
 
+    def test_paper_s3_onboarding_workflow_is_profile_local(self):
+        import card_profiles
+
+        paper_s3 = card_profiles.get_profile("paper-s3")
+        m5paper = card_profiles.get_profile("m5paper-v1.1")
+
+        self.assertEqual(paper_s3["onboarding"]["first_dashboard"], "configured-dashboard")
+        self.assertTrue(paper_s3["onboarding"]["configure_interests_before_dashboard"])
+        self.assertTrue(paper_s3["onboarding"]["configure_profile_before_dashboard"])
+        self.assertNotIn("configure_interests_after_dashboard", paper_s3["onboarding"])
+        self.assertTrue(paper_s3["onboarding"]["schedule_handoff_after_interests"])
+        self.assertEqual(paper_s3["onboarding"]["sleep_flow"], "sleep-card")
+        self.assertNotIn("onboarding", m5paper)
+
     def test_profile_aliases_keep_original_card_environment(self):
         import card_profiles
 

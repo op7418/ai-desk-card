@@ -67,6 +67,18 @@ class ConfigureInterestsTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             configure_interests.parse_slots("left=weather", args.profile)
 
+    def test_requires_weather_location_when_requested(self):
+        import configure_interests
+
+        args = configure_interests.build_arg_parser().parse_args([
+            "--profile", "paper-s3",
+            "--require-weather-location",
+            "--non-interactive",
+        ])
+
+        with self.assertRaises(SystemExit):
+            configure_interests.run(args)
+
 
 if __name__ == "__main__":
     unittest.main()

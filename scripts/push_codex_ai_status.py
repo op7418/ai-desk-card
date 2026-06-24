@@ -368,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     parser.add_argument("--slot", default="top-right",
                         choices=("top-left", "top-right", "middle", "bottom", "full"))
-    parser.add_argument("--session-name", default="Codex")
+    parser.add_argument("--session-name", default="")
     parser.add_argument("--task", default="Codex usage remaining")
     parser.add_argument("--model", default="")
     parser.add_argument("--five-hour-remaining", default="")
@@ -420,9 +420,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[codex-ai-status] or create JSON: {args.state_file}", file=sys.stderr)
         return 1
 
+    session_name = args.session_name or "codex"
     payload = build_payload(
         slot=args.slot,
-        session_name=args.session_name,
+        session_name=session_name,
         task=args.task,
         usage=usage,
     )
