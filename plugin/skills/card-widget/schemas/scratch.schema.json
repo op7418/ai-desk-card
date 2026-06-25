@@ -6,6 +6,8 @@
   "required": ["text"],
   "additionalProperties": false,
   "properties": {
+    "title":  { "type": "string", "maxLength": 28,
+                "description": "Optional card title shown in the header. Defaults to NOTE." },
     "text":   { "type": "string", "maxLength": 180,
                 "description": "Body text. Can be a sentence or a few lines. Wraps automatically." },
     "source": { "type": "string", "maxLength": 20,

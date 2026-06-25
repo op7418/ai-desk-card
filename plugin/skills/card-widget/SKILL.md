@@ -1,7 +1,7 @@
 ---
 name: card-widget
 description: |
-  Push live data to the user's ai-desk-card M5Paper e-ink companion display.
+  Push live data to the user's ai-desk-card M5Paper or PaperS3 e-ink companion display.
   Use whenever the user asks to show todos, calendar, weather, AI status,
   inbox counts, next meeting, or any glanceable info on their card / 卡片 /
   副屏 / 墨水屏 / e-ink display. 16 widget types available; AI picks slot
@@ -22,11 +22,16 @@ allowed-tools:
   - Write
 ---
 
-# card-widget — drive the M5Paper 副屏
+# card-widget — drive the M5Paper / PaperS3 副屏
 
 The card is a 540 × 960 e-ink panel sitting next to the user's monitor.
 You push 1-4 widgets and the daemon renders a single frame; transfer
 time depends on the transport.
+
+For M5Stack PaperS3, use `--profile paper-s3` commands. The current
+recommended transport is Wi-Fi HTTP after USB serial provisioning. USB serial
+remains the setup/fallback path. PaperS3 supports power telemetry and
+sleep-card mode; BLE and deep sleep are not implemented for PaperS3 yet.
 
 ## Transport & latency (v0.8)
 
@@ -225,11 +230,41 @@ Health nudge. Last-break + sitting + eye-rest.
 ### AI monitoring
 
 #### `ai-status` — _narrow OK_
-Model + task + context bar. Push at the start of any non-trivial task.
+Model + task + AI 5h / weekly remaining usage when known. Push at the start
+of any non-trivial task. Prefer `usage` over the older `context` bar.
 ```json
-{"session_name":"refactor auth","model":"Sonnet 4.6","task":"writing tests",
- "context":{"used":42000,"limit":200000},"elapsed_seconds":480}
+{"session_name":"refactor auth","model":"GPT-5 Codex","task":"writing tests",
+ "usage":{"five_hour_remaining":"3h 20m","weekly_remaining":"72%"}}
 ```
+If the user asks to show Codex account usage on the card, use the local helper
+instead of the sample dashboard data:
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\push_codex_ai_status.py
+```
+By default the helper reads real Codex quota through `codex app-server`
+(`account/rateLimits/read`) and pushes the card. If app-server is unavailable,
+it can also parse a copied `/status` block:
+```powershell
+Get-Content $env:USERPROFILE\.codex\ai-desk-card-status.txt -Raw |
+  .\.pio-venv\Scripts\python.exe scripts\push_codex_ai_status.py --status-stdin
+```
+The helper also accepts explicit `CODEX_MODEL`, `CODEX_5H_REMAINING`,
+`CODEX_WEEKLY_REMAINING`, or `%USERPROFILE%\.codex\ai-desk-card-usage.json`.
+Do not read Codex auth tokens or private ChatGPT endpoints for this.
+
+If the user asks to show Claude Code account usage, use Claude Code's
+statusline data. Configure Claude Code `statusLine` to run:
+```powershell
+C:\Users\lucyundead\AppData\Local\Programs\Python\Python313\python.exe E:\dev\ai-desk-card\scripts\claude_statusline_sink.py
+```
+After Claude Code has produced at least one assistant response, push the card:
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\push_claude_ai_status.py
+```
+The sink writes only `%USERPROFILE%\.claude\ai-desk-card-usage.json` with
+model, 5h remaining, weekly remaining, and reset hints. Do not read Claude
+auth tokens. `rate_limits` appears only for Claude.ai subscribers after the
+first response in the session.
 
 #### `ai-tasks` — _narrow OK_
 Running / waiting / blocked / done-today counters. Vertical in narrow.
@@ -313,9 +348,10 @@ to push.
 
 ## Sleep-frame (name card)
 
-The device has a "digital business card" mode: when it deep-sleeps the
-e-ink panel retains the last frame at 0 W until power-cycled. To push the
-card and put the device to sleep:
+The device has a "digital business card" mode. On M5Paper V1.1, the daemon
+pushes the card and then enters firmware deep sleep. On PaperS3, `/card-sleep`
+pushes the same sleep-card frame but does not send a deep-sleep command.
+To push the card:
 
 ```bash
 /card-sleep
@@ -346,9 +382,9 @@ intentionally. Tag icons should be plain short labels (`Job` / `City` /
 
 ## When to push proactively
 
-- **Starting a non-trivial task**: push `ai-status` with `session_name` +
-  `task`. Once per task, not per action — e-ink doesn't like frequent
-  refreshes.
+- **Starting a non-trivial task**: push `ai-status` with `session_name`,
+  `model`, `task`, and Codex `usage` if known. Once per task, not per
+  action — e-ink doesn't like frequent refreshes.
 - **Long-running operation finishes**: push `scratch` with a success
   line ("PR opened: #1234"). User glances at card and knows.
 - **Don't push** for trivial state changes or every tool call.

@@ -26,22 +26,45 @@ import argparse
 import asyncio
 import base64
 import binascii
+import copy
 import glob
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+import urllib.error
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+import card_profiles
+
+
+def _urlopen_direct(req, timeout: float):
+    """Open LAN device URLs without inheriting desktop HTTP proxy settings."""
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
 
 # v0.6 server-side rendering. Device receives 540×960 4bpp pixel frames
 # rather than widget_set JSON. We bump baud accordingly. Push debounce on
 # top of M5EPD's ~500ms refresh time means we don't hammer the panel.
 SERIAL_BAUD = 115200   # v0.6 first cut — see main.cpp note about baud bump issues
-FRAME_W, FRAME_H = 540, 960
+DEFAULT_RENDER_PROFILE = card_profiles.get_profile("m5paper-v1.1")
+FRAME_W = int(DEFAULT_RENDER_PROFILE["logical_width"])
+FRAME_H = int(DEFAULT_RENDER_PROFILE["logical_height"])
 FRAME_BYTES = FRAME_W * FRAME_H // 2   # 259,200
+PAPER_S3_RAW_FW_TOKEN = "paper-s3-frame"
+SERIAL_RAW_WRITE_SIZE = 512
+SERIAL_RAW_WRITE_DELAY_S = 0.005
+SERIAL_RAW_BEGIN_TIMEOUT_S = 5.0
+SERIAL_RAW_END_TIMEOUT_S = 45.0
 PUSH_DEBOUNCE_S = 1.5
 
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -50,8 +73,13 @@ NUS_TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 WIDGET_LOCK = threading.Lock()
 WIDGET_CACHE: dict = {}
-_WIDGET_CACHE_PATH = os.path.join(
-    os.environ.get("TMPDIR", "/tmp"), "ai_desk_card_widget_cache.json")
+
+
+def _daemon_cache_path(filename: str) -> str:
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
+_WIDGET_CACHE_PATH = _daemon_cache_path("ai_desk_card_widget_cache.json")
 
 
 def _persist_widget_cache():
@@ -81,6 +109,31 @@ VIEW_LOCK = threading.Lock()
 IN_SETTINGS = False
 VIEW_HOT_ZONES: list = []          # populated after settings render; firmware uses for tap routing
 DEVICE_TELEMETRY: dict = {}        # firmware-reported state (battery, fw, mac, uptime) — fills on /status_report
+UI_STATES = (
+    "BOOTING",
+    "READY",
+    "RECEIVING_FRAME",
+    "DISPLAYING_FRAME",
+    "ERROR",
+    "STATUS",
+)
+UI_STATE = "BOOTING"
+UI_LAST_ERROR = ""
+UI_STATE_LOCK = threading.Lock()
+FRAME_STATUS_LOCK = threading.Lock()
+FRAME_STATUS = {
+    "render_id": 0,
+    "in_progress": False,
+    "selected_profile": "m5paper-v1.1",
+    "selected_view": "widgets",
+    "selected_widgets": [],
+    "output": None,
+    "transfer": {"method": None, "target": None, "bytes": 0},
+    "result": "idle",
+    "error": "",
+    "started_at": None,
+    "ended_at": None,
+}
 WIDGET_SLOTS = ("top-left", "top-right", "middle", "bottom", "full")
 WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
                 "ai-status", "ai-tasks",
@@ -89,9 +142,36 @@ WIDGET_TYPES = ("weather", "todo", "calendar", "messages",
                 "inbox", "next-meeting", "pr-queue",
                 "break-reminder", "deadlines")
 TRANSPORT = None
+REQUESTED_PROFILE = "auto"
 
 
 def log(*a, **kw): print(*a, file=sys.stderr, flush=True, **kw)
+
+
+def _transition_ui_state(next_state: str, reason: str):
+    """Record a high-level UI/frame state transition for touch/action logs."""
+    global UI_STATE
+    if next_state not in UI_STATES:
+        next_state = "ERROR"
+    with UI_STATE_LOCK:
+        prev = UI_STATE
+        UI_STATE = next_state
+    if prev != next_state:
+        log(f"[state] previous={prev} next={next_state} reason={reason}")
+
+
+def _set_ui_error(reason: str):
+    global UI_LAST_ERROR
+    UI_LAST_ERROR = str(reason)
+    log(f"[error] reason={UI_LAST_ERROR}")
+    _transition_ui_state("ERROR", UI_LAST_ERROR)
+
+
+def _clear_ui_error(reason: str):
+    global UI_LAST_ERROR
+    if UI_LAST_ERROR:
+        log(f"[error] cleared reason={reason} previous={UI_LAST_ERROR}")
+    UI_LAST_ERROR = ""
 
 
 # ---- Transports ----
@@ -102,10 +182,25 @@ class Transport:
     def connected(self) -> bool: raise NotImplementedError
 
 
+def _open_serial_no_reset(port: str, baud: int):
+    import serial
+
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = baud
+    ser.timeout = 0.2
+    ser.write_timeout = 5
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    ser.dtr = False
+    ser.rts = False
+    return ser
+
+
 class SerialTransport(Transport):
     def __init__(self, port):
-        import serial
-        self.ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        self.ser = _open_serial_no_reset(port, SERIAL_BAUD)
         self._lock = threading.Lock()
         time.sleep(0.2)
         log(f"[serial] opened {port} @ {SERIAL_BAUD} baud")
@@ -140,6 +235,7 @@ class WiFiTransport(Transport):
         self.ip = ip
         self.port = port
         self._connect_ok = True
+        self.last_error = ""
 
     def start(self, on_byte, on_connect=None):
         # HTTP has no persistent connection to "start". Run the handshake
@@ -164,48 +260,69 @@ class WiFiTransport(Transport):
                 data=json.dumps(obj).encode(),
                 method="POST",
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=4) as r:
+            with _urlopen_direct(req, timeout=4) as r:
                 _ = r.read()
             self._connect_ok = True
+            self.last_error = ""
         except Exception as e:
             log(f"[wifi] cmd {obj.get('cmd')!r}: {e!r}")
+            self.last_error = f"cmd {obj.get('cmd')!r} {self.ip}:{self.port}: {e!r}"
             self._connect_ok = False
 
+    def _set_error(self, context: str, exc: Exception):
+        reason = getattr(exc, "reason", exc)
+        self.last_error = f"{context} {self.ip}:{self.port}: {reason!r}"
+        log(f"[wifi] {self.last_error}")
+        self._connect_ok = False
+
     def push_frame_http(self, packed: bytes,
-                        region: "tuple | None") -> bool:
+                        region: "tuple | None",
+                        *,
+                        fid: int | None = None,
+                        crc: int | None = None) -> bool:
         import urllib.request
         url = f"http://{self.ip}:{self.port}/frame"
         if region is not None:
             x, y, w, h = region
             url += f"?x={x}&y={y}&w={w}&h={h}"
+        else:
+            w, h = FRAME_W, FRAME_H
+        headers = {"Content-Type": "application/octet-stream"}
+        if fid is not None:
+            headers["X-Frame-Fid"] = str(int(fid))
+        headers["X-Frame-Width"] = str(int(w))
+        headers["X-Frame-Height"] = str(int(h))
+        headers["X-Frame-Bpp"] = "4"
+        headers["X-Frame-Bytes"] = str(len(packed))
+        if crc is not None:
+            headers["X-Frame-Crc"] = f"{int(crc) & 0xFFFFFFFF:08x}"
         try:
             req = urllib.request.Request(
                 url, data=packed, method="POST",
-                headers={"Content-Type": "application/octet-stream"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+                headers=headers)
+            with _urlopen_direct(req, timeout=15) as r:
                 ok = (r.status == 200)
             self._connect_ok = ok
+            self.last_error = "" if ok else f"frame HTTP status {r.status}"
             return ok
-        except Exception as e:
-            log(f"[wifi] frame: {e!r}")
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            self.last_error = f"frame HTTP {self.ip}:{self.port}: {e.code} {body}".strip()
+            log(f"[wifi] {self.last_error}")
             self._connect_ok = False
+            return False
+        except Exception as e:
+            self._set_error("frame", e)
             return False
 
     def connected(self) -> bool:
-        # v0.9: don't sticky-false on a single timed-out cmd. If our cached
-        # flag is False, do a quick TCP probe (~0.5s) and re-flip on
-        # success — otherwise a single failed cmd:sleep_now would lock the
-        # transport out, even after the device rebooted and is fully
-        # reachable on /frame again.
-        if self._connect_ok:
-            return True
-        try:
-            import socket
-            with socket.create_connection((self.ip, self.port), timeout=0.5):
-                self._connect_ok = True
-                return True
-        except Exception:
-            return False
+        # Keep this deterministic: a failed HTTP frame/command marks the
+        # transport disconnected until a later HTTP frame/command succeeds.
+        return self._connect_ok
 
 
 class BLETransport(Transport):
@@ -344,15 +461,26 @@ def _telemetry_listener(line: str):
         return
     # Map firmware field names → DEVICE_TELEMETRY keys.
     mapping = {
+        "device":          "device",
         "fw":              "firmware",
         "mac":             "mac",
         "battery_pct":     "battery_pct",
         "battery_mv":      "battery_mv",
+        "vbus_mv":         "vbus_mv",
         "on_usb":          "on_usb",
+        "charging":        "charging",
+        "power_source":    "power_source",
+        "power_mode":      "power_mode",
+        "deep_sleep_enabled": "deep_sleep_enabled",
+        "wake_reason":     "wake_reason",
+        "last_power_read_ms": "last_power_read_ms",
         "wifi_connected":  "wifi_connected",
         "wifi_ssid":       "wifi_ssid",
         "wifi_ip":         "wifi_ip",
         "wifi_rssi":       "wifi_rssi",
+        "wifi_state":      "wifi_state",
+        "wifi_error":      "wifi_error",
+        "frame_state":     "frame_state",
     }
     for src, dst in mapping.items():
         if src in obj:
@@ -387,6 +515,37 @@ def _telemetry_listener(line: str):
             pass
 
 
+def _action_result(action: str, accepted: bool, reason: str = "", **extra) -> dict:
+    result = {"action": action, "accepted": accepted}
+    if reason:
+        result["reason"] = reason
+    result.update(extra)
+    status = "accepted" if accepted else "ignored"
+    detail = f" reason={reason}" if reason else ""
+    log(f"[action] name={action} {status}{detail}")
+    return result
+
+
+def _match_touch_zone(x: int, y: int) -> "tuple[dict | None, str | None]":
+    for hz in VIEW_HOT_ZONES:
+        x0, y0, x1, y1 = hz["rect"]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return hz, str(hz.get("action") or "")
+    return None, None
+
+
+def _dispatch_touch_xy(x: int, y: int, hold_ms=None, source: str = "serial") -> dict:
+    DEVICE_TELEMETRY["last_status_seen_ms"] = int(time.time() * 1000)
+    hold = "?" if hold_ms is None else str(hold_ms)
+    log(f"[touch<{source}] mapped x={x} y={y} hold_ms={hold}")
+    zone, action = _match_touch_zone(x, y)
+    if action is None:
+        log(f"[touch<{source}] hit target id=none")
+        return _action_result("none", False, "unknown-target")
+    log(f"[touch<{source}] hit target id={action} rect={zone['rect']}")
+    return _dispatch_touch_action(action)
+
+
 def _touch_event_listener(line: str):
     """Firmware v0.9+ emits {event:touch, x, y, hold_ms} on the finger-up
     edge of a tap. Map (x,y) to a VIEW_HOT_ZONES action and dispatch."""
@@ -400,16 +559,20 @@ def _touch_event_listener(line: str):
         x, y = int(obj["x"]), int(obj["y"])
     except (KeyError, TypeError, ValueError):
         return
-    action = None
-    for hz in VIEW_HOT_ZONES:
-        x0, y0, x1, y1 = hz["rect"]
-        if x0 <= x <= x1 and y0 <= y <= y1:
-            action = hz["action"]; break
-    if action is None:
-        log(f"[touch<] ({x},{y}) → no zone match")
-        return
-    log(f"[touch<] ({x},{y}) → {action}")
-    _internal_dispatch(action)
+    hold_ms = obj.get("hold_ms")
+    _dispatch_touch_xy(x, y, hold_ms=hold_ms, source="serial")
+
+
+def _dispatch_touch_action(action: str):
+    if _FRAME_LOCK.locked():
+        return _action_result(action, False, "busy", state=UI_STATE)
+    if action == "sleep":
+        # Sleep renders and pushes a full frame before any optional follow-up
+        # command. Do it off the serial reader thread so raw-frame ack lines
+        # can be read while the push waits for them.
+        threading.Thread(target=_internal_dispatch, args=(action,), daemon=True).start()
+        return _action_result(action, True, "async", state=UI_STATE)
+    return _internal_dispatch(action)
 
 
 def on_rx_byte(b: int):
@@ -476,8 +639,132 @@ _FRAME_LAST_PUSH = 0.0   # epoch of last completed push (for bar's "Xs ago")
 _FRAME_LOCK = threading.Lock()
 _FRAME_DIRTY = threading.Event()
 
+
+def _resting_ui_state() -> str:
+    if UI_LAST_ERROR:
+        return "ERROR"
+    if IN_SETTINGS:
+        return "STATUS"
+    if _FRAME_LAST_PUSH > 0:
+        return "DISPLAYING_FRAME"
+    return "READY"
+
+
 def _crc32(data: bytes) -> int:
     return binascii.crc32(data) & 0xFFFFFFFF
+
+
+def _paper_s3_raw_frame_supported() -> bool:
+    fw = str(DEVICE_TELEMETRY.get("firmware") or "").lower()
+    return PAPER_S3_RAW_FW_TOKEN in fw
+
+
+def _selected_profile_label() -> str:
+    detected = _detected_profile_label()
+    if detected:
+        return detected
+    if REQUESTED_PROFILE != "auto":
+        return REQUESTED_PROFILE
+    return card_profiles.default_profile_name()
+
+
+def _detected_profile_label() -> str | None:
+    detected = card_profiles.detect_profile_from_status({
+        "device": DEVICE_TELEMETRY.get("device"),
+        "firmware": DEVICE_TELEMETRY.get("firmware"),
+        "fw": DEVICE_TELEMETRY.get("fw"),
+        "model": DEVICE_TELEMETRY.get("model"),
+    })
+    return detected
+
+
+def _selected_profile_source() -> str:
+    if _detected_profile_label():
+        return "telemetry"
+    if REQUESTED_PROFILE != "auto":
+        return "requested"
+    return "default"
+
+
+def _selected_profile() -> dict:
+    return card_profiles.get_profile(_selected_profile_label())
+
+
+def _frame_raw_begin_command(fid: int, byte_count: int, crc: int) -> dict:
+    return {
+        "cmd": "frame_raw_begin",
+        "fid": int(fid) & 0xFFFFFFFF,
+        "w": FRAME_W,
+        "h": FRAME_H,
+        "bpp": 4,
+        "bytes": int(byte_count),
+        "crc": int(crc) & 0xFFFFFFFF,
+    }
+
+
+class _FrameRawAckWaiter:
+    def __init__(self, fid: int):
+        self.fid = int(fid) & 0xFFFFFFFF
+        self._condition = threading.Condition()
+        self._acks = set()
+
+    def __call__(self, line: str):
+        try:
+            obj = json.loads(line.strip())
+        except Exception:
+            return
+        if not isinstance(obj, dict):
+            return
+        if obj.get("ack") not in ("frame_raw_begin", "frame_raw_end"):
+            return
+        try:
+            fid = int(obj.get("fid"))
+        except (TypeError, ValueError):
+            return
+        if fid != self.fid:
+            return
+        with self._condition:
+            self._acks.add(obj["ack"])
+            self._condition.notify_all()
+
+    def wait(self, ack: str, timeout_s: float) -> bool:
+        deadline = time.time() + timeout_s
+        with self._condition:
+            while ack not in self._acks:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return True
+
+
+def _push_frame_raw_serial(packed: bytes, fid: int, crc: int) -> bool:
+    if TRANSPORT is None:
+        log("[frame] raw serial error: no transport")
+        return False
+
+    waiter = _FrameRawAckWaiter(fid)
+    add_rx_listener(waiter)
+    try:
+        send_line(_frame_raw_begin_command(fid, len(packed), crc))
+        if not waiter.wait("frame_raw_begin", SERIAL_RAW_BEGIN_TIMEOUT_S):
+            log(f"[frame] raw serial error: no frame_raw_begin ack fid={fid}")
+            return False
+
+        for start in range(0, len(packed), SERIAL_RAW_WRITE_SIZE):
+            end = min(start + SERIAL_RAW_WRITE_SIZE, len(packed))
+            TRANSPORT.write(packed[start:end])
+            if SERIAL_RAW_WRITE_DELAY_S > 0:
+                time.sleep(SERIAL_RAW_WRITE_DELAY_S)
+            if end == SERIAL_RAW_WRITE_SIZE or end % 32768 == 0 or end == len(packed):
+                log(f"[frame] raw serial bytes {end}/{len(packed)}")
+
+        if not waiter.wait("frame_raw_end", SERIAL_RAW_END_TIMEOUT_S):
+            log(f"[frame] raw serial error: no frame_raw_end ack fid={fid}")
+            return False
+        return True
+    finally:
+        remove_rx_listener(waiter)
 
 
 # v0.8 architecture C — BLE→Wi-Fi burst.
@@ -499,7 +786,7 @@ def _verify_wifi_reachable(ip: str) -> bool:
         import urllib.request
         req = urllib.request.Request(
             f"http://{ip}:{_BURST_HTTP_PORT}/status", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with _urlopen_direct(req, timeout=2) as r:
             return r.status == 200
     except Exception:
         return False
@@ -565,7 +852,7 @@ def _burst_power_down_loop():
             _BURST_LAST_PUSH = 0
 
 
-def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
+def push_frame_bytes(packed: bytes, region: "tuple|None" = None) -> bool:
     """Send a packed 4bpp frame via the active transport.
 
     Full frame: packed = FRAME_BYTES, region = None.
@@ -589,13 +876,29 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
         with _FRAME_LOCK:
             _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
             fid = _FRAME_ID
+            crc = _crc32(packed)
             t0 = time.time()
-            ok = TRANSPORT.push_frame_http(packed, region)
+            ok = TRANSPORT.push_frame_http(packed, region, fid=fid, crc=crc)
             dt = time.time() - t0
             kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
-            log(f"[frame] http push fid={fid} {len(packed)}B {kind} ({dt:.2f}s) "
+            log(f"[frame] http push fid={fid} crc={crc:08x} {len(packed)}B {kind} ({dt:.2f}s) "
                 f"{'ok' if ok else 'FAIL'}")
-        return
+        return bool(ok)
+
+    if (region is None and len(packed) == FRAME_BYTES
+            and isinstance(TRANSPORT, SerialTransport)
+            and _paper_s3_raw_frame_supported()):
+        with _FRAME_LOCK:
+            _FRAME_ID = (_FRAME_ID + 1) & 0xFFFFFFFF
+            fid = _FRAME_ID
+            crc = _crc32(packed)
+            t0 = time.time()
+            log(f"[frame] raw serial push start fid={fid} {len(packed)}B crc={crc:08x}")
+            ok = _push_frame_raw_serial(packed, fid, crc)
+            dt = time.time() - t0
+            log(f"[frame] raw serial push fid={fid} {len(packed)}B full ({dt:.2f}s) "
+                f"{'ok' if ok else 'FAIL'}")
+        return bool(ok)
 
     # Architecture C: BLE-primary daemon takes a detour through Wi-Fi for
     # this push. ~5 s wake overhead on a cold start, ~0 if Wi-Fi was just
@@ -618,7 +921,7 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
                 with _BURST_LOCK:
                     global _BURST_LAST_PUSH
                     _BURST_LAST_PUSH = time.time()
-                return
+                return True
             log("[burst] HTTP push failed — falling back to BLE chunked path")
             # fall through to the chunked-JSON code below
 
@@ -651,12 +954,52 @@ def push_frame_bytes(packed: bytes, region: "tuple|None" = None):
         dt = time.time() - t0
         kind = "full" if region is None else f"region({region[0]},{region[1]} {region[2]}x{region[3]})"
         log(f"[frame] pushed fid={fid} {len(packed)}B {kind} in {len(chunks)} chunks ({dt:.2f}s)")
+        return True
+
+
+def _sleep_card_profile_for_selected_device() -> dict:
+    if _selected_profile_label() != "paper-s3":
+        return {}
+    power = _power_status()
+    if _FRAME_LAST_PUSH > 0:
+        last_update = datetime.fromtimestamp(
+            _FRAME_LAST_PUSH
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        last_update = "unknown"
+    battery = "unknown"
+    if power.get("battery_pct") is not None:
+        battery = f"{power.get('battery_pct')}%"
+    source = "USB" if power.get("on_usb") is True else (
+        "battery" if power.get("on_usb") is False else power.get("power_source")
+    )
+    if source:
+        battery = f"{battery} / {source}"
+    return {
+        "name": "Device sleeping",
+        "tagline": "PaperS3 sleep card",
+        "bio_lines": [
+            "profile: paper-s3",
+            f"last update: {last_update}",
+            f"battery: {battery}",
+            "wake: tap Refresh or restart daemon to repaint",
+            "deep sleep: unsupported",
+        ],
+        "tags": [
+            {"icon": "Mode", "text": power.get("mode") or "always-on"},
+            {"icon": "Wake", "text": power.get("last_wake_reason") or "unknown"},
+        ],
+        "qr_label": "",
+        "footer": "ai-desk-card / sleep-card",
+    }
 
 
 def render_and_push_sleep():
-    """Render the sleep-frame name card and push it. Caller is expected to
-    follow up with send_line({cmd:sleep_now}) so the device enters deep
-    sleep with the last frame on the panel."""
+    """Render the sleep-frame name card and push it.
+
+    Callers decide whether the selected profile should receive a follow-up
+    sleep command. PaperS3 intentionally stops at the sleep-card frame.
+    """
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render_sleep
@@ -670,15 +1013,19 @@ def render_and_push_sleep():
         log(f"[sleep] import fail: {e!r}")
         return False
     try:
-        profile = card_render_sleep.load_profile()
+        profile = _sleep_card_profile_for_selected_device()
+        if not profile:
+            profile = card_render_sleep.load_profile()
         img = card_render_sleep.render_sleep_frame(profile)
         packed = card_render.to_4bpp_packed(img)
     except Exception as e:
         log(f"[sleep] render failed: {e!r}")
         return False
     log(f"[sleep] rendering name card for '{profile.get('name', '?')}'")
-    push_frame_bytes(packed)
-    return True
+    ok = push_frame_bytes(packed)
+    if not ok:
+        _set_ui_error("sleep frame push failed")
+    return ok
 
 
 def _active_transport_label() -> "str | None":
@@ -713,6 +1060,50 @@ def _device_alive(threshold_s: float = 90.0) -> bool:
     return _device_seen_seconds_ago() <= threshold_s
 
 
+def _power_config(profile: "dict | None" = None) -> dict:
+    profile = profile or _selected_profile()
+    config = profile.get("power") or {}
+    return config if isinstance(config, dict) else {}
+
+
+def _power_status(profile: "dict | None" = None) -> dict:
+    """Merge profile power policy with the latest firmware telemetry."""
+    profile = profile or _selected_profile()
+    config = _power_config(profile)
+    deep_sleep = config.get("deep_sleep") or {}
+    ble = config.get("ble") or {}
+    return {
+        "mode": DEVICE_TELEMETRY.get("power_mode")
+                or config.get("default_mode")
+                or "always-on",
+        "supported_modes": list(config.get("supported_modes") or ["always-on"]),
+        "idle_timeout_minutes": int(config.get("idle_timeout_minutes") or 0),
+        "battery_pct": DEVICE_TELEMETRY.get("battery_pct"),
+        "battery_mv": DEVICE_TELEMETRY.get("battery_mv"),
+        "vbus_mv": DEVICE_TELEMETRY.get("vbus_mv"),
+        "on_usb": DEVICE_TELEMETRY.get("on_usb"),
+        "charging": DEVICE_TELEMETRY.get("charging"),
+        "power_source": DEVICE_TELEMETRY.get("power_source") or "unknown",
+        "last_power_read_ms": DEVICE_TELEMETRY.get("last_power_read_ms"),
+        "deep_sleep_enabled": bool(deep_sleep.get("enabled")),
+        "deep_sleep_status": str(deep_sleep.get("status") or "unsupported"),
+        "ble_status": str(ble.get("status") or "unsupported"),
+        "wake_sources": list(config.get("wake_sources") or []),
+        "last_wake_reason": DEVICE_TELEMETRY.get("wake_reason") or "unknown",
+        "last_wake_recovery": DEVICE_TELEMETRY.get("wake_recovery")
+                              or config.get("wake_recovery")
+                              or "unknown",
+    }
+
+
+def _deep_sleep_enabled_for_selected_profile() -> bool:
+    power = _power_status()
+    return (
+        bool(power.get("deep_sleep_enabled"))
+        and power.get("deep_sleep_status") != "unsupported"
+    )
+
+
 def _bar_status() -> dict:
     """Build the bottom-bar status payload at render time."""
     age = None
@@ -736,15 +1127,152 @@ def _settings_state() -> dict:
     visible facts (transport, baud, daemon_ok)."""
     transport_name = (type(TRANSPORT).__name__.replace("Transport", "").upper()
                       if TRANSPORT else "—")
+    profile = _selected_profile()
     state = dict(DEVICE_TELEMETRY)   # battery, firmware, mac, uptime, battery_mv ...
-    state.setdefault("model", "M5Paper V1.1")
+    state.setdefault("model", state.get("device", profile["device_name"]))
     state["transport"] = transport_name
     state["baud"]      = str(SERIAL_BAUD) if isinstance(TRANSPORT, SerialTransport) else ""
     state["daemon_ok"] = TRANSPORT is not None and TRANSPORT.connected()
     state["ble_paired"] = False
+    state["ui_state"] = UI_STATE
+    state["last_error"] = UI_LAST_ERROR
+    state["firmware_profile"] = profile["name"]
+    power = _power_status(profile)
+    state["power_mode"] = power["mode"]
+    state["power_source"] = power["power_source"]
+    state["vbus_mv"] = power["vbus_mv"]
+    state["last_power_read_ms"] = power["last_power_read_ms"]
+    state["deep_sleep_enabled"] = power["deep_sleep_enabled"]
+    state["deep_sleep_status"] = power["deep_sleep_status"]
+    state["ble_status"] = power["ble_status"]
+    state["wake_sources"] = power["wake_sources"]
+    state["last_wake_reason"] = power["last_wake_reason"]
+    state["last_wake_recovery"] = power["last_wake_recovery"]
+    state["ip"] = state.get("wifi_ip") or "—"
+    if _FRAME_LAST_PUSH > 0:
+        state["last_frame_age_s"] = int(time.time() - _FRAME_LAST_PUSH)
+        state["last_frame_time"] = datetime.fromtimestamp(
+            _FRAME_LAST_PUSH
+        ).strftime("%H:%M:%S")
+    else:
+        state["last_frame_age_s"] = None
+        state["last_frame_time"] = "—"
     # Pass through firmware's wifi_* fields if available (v0.8).
     # Renderer reads wifi_connected / wifi_ssid / wifi_ip / wifi_rssi.
     return state
+
+
+def _widget_type_names(snapshot: list) -> list:
+    names = []
+    for w in snapshot:
+        name = str(w.get("type") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _transfer_target_label() -> str:
+    if TRANSPORT is None:
+        return "none"
+    if isinstance(TRANSPORT, SerialTransport):
+        return "serial"
+    if isinstance(TRANSPORT, WiFiTransport):
+        return "wifi"
+    if isinstance(TRANSPORT, BLETransport):
+        return "ble"
+    return type(TRANSPORT).__name__
+
+
+def _transfer_method_label(region: "tuple | None" = None) -> str:
+    if isinstance(TRANSPORT, WiFiTransport):
+        return "http"
+    if isinstance(TRANSPORT, SerialTransport):
+        if region is None and _paper_s3_raw_frame_supported():
+            return "raw-serial"
+        return "chunked-serial"
+    if isinstance(TRANSPORT, BLETransport):
+        return "ble-wifi-burst" if DEVICE_TELEMETRY.get("wifi_ip") else "chunked-ble"
+    return "unknown"
+
+
+def _reset_frame_status_for_test():
+    with FRAME_STATUS_LOCK:
+        FRAME_STATUS.clear()
+        FRAME_STATUS.update({
+            "render_id": 0,
+            "in_progress": False,
+            "selected_profile": _selected_profile_label(),
+            "selected_view": "widgets",
+            "selected_widgets": [],
+            "output": None,
+            "transfer": {"method": None, "target": None, "bytes": 0},
+            "result": "idle",
+            "error": "",
+            "started_at": None,
+            "ended_at": None,
+        })
+
+
+def _begin_frame_status(selected_view: str, selected_widgets: list) -> int:
+    started = datetime.now().isoformat(timespec="seconds")
+    with FRAME_STATUS_LOCK:
+        render_id = int(FRAME_STATUS.get("render_id") or 0) + 1
+        FRAME_STATUS.clear()
+        FRAME_STATUS.update({
+            "render_id": render_id,
+            "in_progress": True,
+            "selected_profile": _selected_profile_label(),
+            "selected_view": selected_view,
+            "selected_widgets": list(selected_widgets),
+            "output": None,
+            "transfer": {
+                "method": None,
+                "target": _transfer_target_label(),
+                "bytes": 0,
+            },
+            "result": "rendering",
+            "error": "",
+            "started_at": started,
+            "ended_at": None,
+        })
+        return render_id
+
+
+def _finish_frame_status(result: str, *, error: str = "",
+                         output: "dict | None" = None,
+                         transfer: "dict | None" = None):
+    ended = datetime.now().isoformat(timespec="seconds")
+    with FRAME_STATUS_LOCK:
+        if output is not None:
+            FRAME_STATUS["output"] = output
+        if transfer is not None:
+            FRAME_STATUS["transfer"] = transfer
+        FRAME_STATUS["result"] = result
+        FRAME_STATUS["error"] = error
+        FRAME_STATUS["in_progress"] = False
+        FRAME_STATUS["ended_at"] = ended
+
+
+def _frame_status_snapshot() -> dict:
+    with FRAME_STATUS_LOCK:
+        status = copy.deepcopy(FRAME_STATUS)
+    status["profile_source"] = _selected_profile_source()
+    status["ui_state"] = UI_STATE
+    status["last_error"] = UI_LAST_ERROR
+    status["last_frame_time"] = (
+        datetime.fromtimestamp(_FRAME_LAST_PUSH).isoformat(timespec="seconds")
+        if _FRAME_LAST_PUSH > 0 else None
+    )
+    status["last_frame_age_s"] = (
+        int(time.time() - _FRAME_LAST_PUSH) if _FRAME_LAST_PUSH > 0 else None
+    )
+    status["transport_connected"] = TRANSPORT is not None and TRANSPORT.connected()
+    status["active_transport"] = _active_transport_label()
+    status["wifi_state"] = DEVICE_TELEMETRY.get("wifi_state")
+    status["wifi_error"] = DEVICE_TELEMETRY.get("wifi_error")
+    status["wifi_ip"] = DEVICE_TELEMETRY.get("wifi_ip")
+    status["power"] = _power_status()
+    return status
 
 
 # v0.7 dirty-region diff: remember the last frame we pushed so the next
@@ -752,8 +1280,7 @@ def _settings_state() -> dict:
 # Skips entirely if nothing changed. Full-frame fallback when the diff
 # covers more than DIFF_FULL_THRESHOLD of the canvas.
 _LAST_FRAME_IMG = None
-_LAST_FRAME_PATH = os.path.join(
-    os.environ.get("TMPDIR", "/tmp"), "ai_desk_card_last_frame.png")
+_LAST_FRAME_PATH = _daemon_cache_path("ai_desk_card_last_frame.png")
 DIFF_FULL_THRESHOLD = 0.50    # diff area > 50% of canvas → just push full
 DIFF_REGION_ALIGN   = 4       # x/w aligned to multiple of 4 for safe 4bpp packing
 
@@ -853,14 +1380,24 @@ def render_and_push():
     take effect without restarting the daemon. Dispatches to the settings
     page renderer when IN_SETTINGS is set. Uses dirty-region diff so the
     typical "one widget changed" path only ships the changed rectangle."""
-    global _FRAME_LAST_PUSH, VIEW_HOT_ZONES
+    global _FRAME_LAST_PUSH, VIEW_HOT_ZONES, _LAST_FRAME_IMG
+    selected_view = "status" if IN_SETTINGS else "widgets"
+    snapshot = _widget_snapshot()
+    selected_widgets = _widget_type_names(snapshot)
+    render_id = _begin_frame_status(selected_view, selected_widgets)
+    _transition_ui_state("RECEIVING_FRAME", "render_and_push")
+    log("[frame] refresh request start reason=render_and_push")
+    log(f"[render] start id={render_id} profile={_selected_profile_label()} "
+        f"view={selected_view} widgets={','.join(selected_widgets) or 'empty'}")
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import card_render
         import importlib
         importlib.reload(card_render)
     except Exception as e:
-        log(f"[render] import fail: {e!r}")
+        err = f"render import failed: {e!r}"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err)
         return
     try:
         if IN_SETTINGS:
@@ -869,14 +1406,82 @@ def render_and_push():
             img = card_render_settings.render_settings_page(_settings_state())
             VIEW_HOT_ZONES = card_render_settings.get_hot_zones()
         else:
-            img = card_render.render_image(_widget_snapshot(),
-                                           status=_bar_status())
+            img = card_render.render_image(snapshot, status=_bar_status())
             # Widget view: only the bottom-bar chips (睡眠 / 设置) are
             # tappable. The renderer populates LAST_BOTTOM_BAR_HOT_ZONES
             # during paint_bottom_bar — copy out here.
             VIEW_HOT_ZONES = card_render.get_bottom_bar_hot_zones()
     except Exception as e:
-        log(f"[render] failed: {e!r}")
+        err = f"render failed: {e!r}"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err)
+        return
+
+    output = {"width": img.size[0], "height": img.size[1], "format": "4bpp"}
+    log(f"[render] end id={render_id} output={img.size[0]}x{img.size[1]} format=4bpp")
+
+    if isinstance(TRANSPORT, SerialTransport) and _paper_s3_raw_frame_supported():
+        packed = card_render.to_4bpp_packed(img)
+        _LAST_FRAME_IMG = img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
+        transfer = {
+            "method": _transfer_method_label(None),
+            "target": _transfer_target_label(),
+            "bytes": len(packed),
+        }
+        log(f"[diff] paper-s3 raw serial -> full frame {len(packed)}B")
+        log(f"[transfer] start id={render_id} method={transfer['method']} "
+            f"target={transfer['target']} bytes={transfer['bytes']}")
+        ok = push_frame_bytes(packed, region=None)
+        log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
+        if not ok:
+            err = "paper-s3 raw serial frame push failed"
+            _set_ui_error(err)
+            _finish_frame_status("failed", error=err,
+                                 output=output, transfer=transfer)
+            log("[frame] refresh request end result=failed")
+            return
+        # PaperS3's raw serial frame stream monopolizes the device parser
+        # until frame_raw_end. Send the current hit rects after the frame so
+        # touch tests on the freshly painted UI have zones immediately.
+        _send_chip_rects(VIEW_HOT_ZONES, force=True)
+        _FRAME_LAST_PUSH = time.time()
+        _clear_ui_error("frame push succeeded")
+        _transition_ui_state(_resting_ui_state(), "frame push complete")
+        _finish_frame_status("ok", output=output, transfer=transfer)
+        log("[frame] refresh request end result=ok")
+        return
+
+    if isinstance(TRANSPORT, WiFiTransport) and _selected_profile_label() == "paper-s3":
+        packed = card_render.to_4bpp_packed(img)
+        _LAST_FRAME_IMG = img.copy()
+        _persist_last_frame(_LAST_FRAME_IMG)
+        transfer = {
+            "method": _transfer_method_label(None),
+            "target": _transfer_target_label(),
+            "bytes": len(packed),
+        }
+        log(f"[diff] paper-s3 wifi -> full frame {len(packed)}B")
+        log(f"[transfer] start id={render_id} method={transfer['method']} "
+            f"target={transfer['target']} bytes={transfer['bytes']}")
+        ok = push_frame_bytes(packed, region=None)
+        log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
+        if not ok:
+            detail = getattr(TRANSPORT, "last_error", "") if TRANSPORT else ""
+            err = "paper-s3 wifi frame push failed"
+            if detail:
+                err += f": {detail}"
+            _set_ui_error(err)
+            _finish_frame_status("failed", error=err,
+                                 output=output, transfer=transfer)
+            log("[frame] refresh request end result=failed")
+            return
+        _send_chip_rects(VIEW_HOT_ZONES, force=True)
+        _FRAME_LAST_PUSH = time.time()
+        _clear_ui_error("frame push succeeded")
+        _transition_ui_state(_resting_ui_state(), "frame push complete")
+        _finish_frame_status("ok", output=output, transfer=transfer)
+        log("[frame] refresh request end result=ok")
         return
 
     # v0.9: tell the firmware which rectangles are currently tappable, so
@@ -888,14 +1493,40 @@ def render_and_push():
     kind, packed, region = _compute_diff(img)
     if kind == "noop":
         log("[render] no pixel change — skipping push")
+        _transition_ui_state(_resting_ui_state(), "frame noop")
+        _finish_frame_status("noop", output=output, transfer={
+            "method": "none",
+            "target": _transfer_target_label(),
+            "bytes": 0,
+        })
+        log("[frame] refresh request end result=noop")
         return
-    push_frame_bytes(packed, region=region)
+    transfer = {
+        "method": _transfer_method_label(region),
+        "target": _transfer_target_label(),
+        "bytes": len(packed),
+    }
+    log(f"[transfer] start id={render_id} method={transfer['method']} "
+        f"target={transfer['target']} bytes={transfer['bytes']}")
+    ok = push_frame_bytes(packed, region=region)
+    log(f"[transfer] end id={render_id} result={'ok' if ok else 'failed'}")
+    if not ok:
+        err = "frame push failed"
+        _set_ui_error(err)
+        _finish_frame_status("failed", error=err,
+                             output=output, transfer=transfer)
+        log("[frame] refresh request end result=failed")
+        return
     _FRAME_LAST_PUSH = time.time()
+    _clear_ui_error("frame push succeeded")
+    _transition_ui_state(_resting_ui_state(), "frame push complete")
+    _finish_frame_status("ok", output=output, transfer=transfer)
+    log("[frame] refresh request end result=ok")
 
 
 _LAST_CHIP_SIG = ""
 
-def _send_chip_rects(zones: list):
+def _send_chip_rects(zones: list, force: bool = False):
     """Push the current view's tappable rects to the firmware. Skipped if
     the rect set hasn't changed since the last send (most frames repaint
     the same hot zones)."""
@@ -907,15 +1538,18 @@ def _send_chip_rects(zones: list):
                       "w": int(x1 - x0), "h": int(y1 - y0),
                       "id": str(hz["action"])[:15]})
     sig = json.dumps(rects, sort_keys=True)
-    if sig == _LAST_CHIP_SIG:
+    if not force and sig == _LAST_CHIP_SIG:
+        log(f"[touch>] chip rects unchanged n={len(rects)}")
         return
     _LAST_CHIP_SIG = sig
+    log(f"[touch>] sending chip rects n={len(rects)} force={force}")
     send_line({"cmd": "set_chips", "rects": rects})
 
 
-def schedule_push():
+def schedule_push(reason: str = "dirty"):
     """Debounce trigger. Sets a dirty flag; the push_loop thread coalesces
     rapid POSTs into a single render+push after PUSH_DEBOUNCE_S of quiet."""
+    log(f"[frame] refresh request queued reason={reason}")
     _FRAME_DIRTY.set()
 
 
@@ -935,6 +1569,7 @@ def push_loop():
                 # below sees it immediately.
                 break
         if not (TRANSPORT and TRANSPORT.connected()):
+            _set_ui_error("no transport for scheduled frame push")
             log("[frame] no transport — skipping push (will retry on next dirty)")
             continue
         render_and_push()
@@ -952,6 +1587,19 @@ def widget_validate(payload: dict) -> tuple:
     return True, ""
 
 
+def _wifi_provision_command(payload: dict) -> tuple[dict | None, str | None]:
+    """Build the firmware command for /provision-wifi without logging secrets."""
+    if "ssid" not in payload:
+        return None, "ssid required"
+    ssid = str(payload.get("ssid") or "").strip()
+    if not ssid:
+        return {"cmd": "wifi_set", "ssid": "", "password": ""}, None
+    pwd = payload.get("password", "")
+    if pwd is None:
+        pwd = ""
+    return {"cmd": "wifi_set", "ssid": ssid, "password": str(pwd)}, None
+
+
 # ---- HTTP server ----
 
 class CardHandler(BaseHTTPRequestHandler):
@@ -967,12 +1615,24 @@ class CardHandler(BaseHTTPRequestHandler):
         except BrokenPipeError: pass
 
     def _handle_sleep_post(self, payload: dict):
-        """Render name card → push → tell device to deep-sleep."""
+        """Render name card, push it, then deep-sleep only if profile supports it."""
         if not (TRANSPORT and TRANSPORT.connected()):
             return self._reply(503, {"error": "device not connected"})
         ok = render_and_push_sleep()
         if not ok:
             return self._reply(500, {"error": "render or push failed"})
+        if not _deep_sleep_enabled_for_selected_profile():
+            power = _power_status()
+            log("[sleep] sleep card pushed; deep sleep skipped "
+                f"profile={_selected_profile_label()} "
+                f"status={power.get('deep_sleep_status')}")
+            return self._reply(200, {
+                "ok": True,
+                "mode": "sleep-card",
+                "deep_sleep": False,
+                "deep_sleep_status": power.get("deep_sleep_status"),
+                "note": "sleep card displayed; deep sleep is not enabled for this profile",
+            })
         # Tell device to enter deep sleep. Optional "wake_after_sec" in the
         # payload (currently unused on firmware side; reserved for v0.7+).
         wake_after = int(payload.get("wake_after_sec") or 0)
@@ -995,10 +1655,17 @@ class CardHandler(BaseHTTPRequestHandler):
         if path == "/widget":
             return self._reply(200, {"widgets": _widget_snapshot()})
         if path == "/pair-status":
+            profile = _selected_profile()
             return self._reply(200, {
                 "connected": TRANSPORT is not None and TRANSPORT.connected(),
                 "transport": type(TRANSPORT).__name__ if TRANSPORT else None,
+                "selected_profile": profile["name"],
+                "profile_source": _selected_profile_source(),
+                "device_name": profile["device_name"],
+                "preferred_transport": profile["preferred_transport"],
             })
+        if path == "/frame-status":
+            return self._reply(200, _frame_status_snapshot())
         if path == "/version":
             return self._reply(200, {"daemon": "ai-desk-card/0.5"})
         if path == "/heartbeat":
@@ -1006,6 +1673,7 @@ class CardHandler(BaseHTTPRequestHandler):
             # Aggregates everything we know about whether the device is
             # actually reachable RIGHT NOW (vs. "transport was picked at
             # startup but we never heard back").
+            profile = _selected_profile()
             seen_s = _device_seen_seconds_ago()
             return self._reply(200, {
                 "alive":              _device_alive(),
@@ -1014,10 +1682,20 @@ class CardHandler(BaseHTTPRequestHandler):
                 "transport_picked":   type(TRANSPORT).__name__ if TRANSPORT else None,
                 "transport_connected": TRANSPORT is not None and TRANSPORT.connected(),
                 "battery_pct":        DEVICE_TELEMETRY.get("battery_pct"),
+                "battery_mv":         DEVICE_TELEMETRY.get("battery_mv"),
+                "vbus_mv":            DEVICE_TELEMETRY.get("vbus_mv"),
+                "on_usb":             DEVICE_TELEMETRY.get("on_usb"),
+                "charging":           DEVICE_TELEMETRY.get("charging"),
+                "power":              _power_status(profile),
                 "uptime":             DEVICE_TELEMETRY.get("uptime"),
                 "firmware":           DEVICE_TELEMETRY.get("firmware"),
+                "selected_profile":   profile["name"],
+                "profile_source":     _selected_profile_source(),
+                "device_name":        profile["device_name"],
                 "wifi_connected":     DEVICE_TELEMETRY.get("wifi_connected"),
                 "wifi_ip":            DEVICE_TELEMETRY.get("wifi_ip"),
+                "wifi_state":         DEVICE_TELEMETRY.get("wifi_state"),
+                "wifi_error":         DEVICE_TELEMETRY.get("wifi_error"),
             })
         return self._reply(404, {"error": f"unknown GET {path!r}"})
 
@@ -1086,9 +1764,8 @@ class CardHandler(BaseHTTPRequestHandler):
 
         if path == "/sleep":
             # Render the name-card sleep frame from assets/profile.yaml,
-            # push it as a regular frame_chunk frame, then send cmd:sleep_now
-            # so the firmware enters deep_sleep (e-ink retains the last
-            # frame at 0 W).
+            # push it as a regular frame, and let the selected profile decide
+            # whether a follow-up cmd:sleep_now is supported.
             return self._handle_sleep_post(payload)
 
         if path == "/refresh":
@@ -1126,9 +1803,12 @@ class CardHandler(BaseHTTPRequestHandler):
             try:
                 # Pass through Wi-Fi fields too — firmware sends them as
                 # top-level keys (wifi_connected, wifi_ip, wifi_ssid, wifi_rssi).
-                for k in ("wifi_connected", "wifi_ssid", "wifi_ip", "wifi_rssi", "on_usb"):
+                for k in ("wifi_connected", "wifi_ssid", "wifi_ip", "wifi_rssi",
+                          "wifi_state", "wifi_error", "on_usb", "charging",
+                          "device", "fw", "power_source", "power_mode", "deep_sleep_enabled",
+                          "wake_reason", "last_power_read_ms", "vbus_mv"):
                     if k in payload:
-                        DEVICE_TELEMETRY[k] = payload[k]
+                        DEVICE_TELEMETRY["firmware" if k == "fw" else k] = payload[k]
                 if "battery_pct" in payload: DEVICE_TELEMETRY["battery_pct"] = int(payload["battery_pct"])
                 if "battery_mv"  in payload: DEVICE_TELEMETRY["battery_mv"]  = int(payload["battery_mv"])
                 if "firmware"    in payload: DEVICE_TELEMETRY["firmware"]    = str(payload["firmware"])[:32]
@@ -1200,11 +1880,13 @@ class CardHandler(BaseHTTPRequestHandler):
         if path == "/provision-wifi":
             # v0.8: forward Wi-Fi credentials to firmware via whatever
             # transport is up (serial / BLE / Wi-Fi itself works too).
-            ssid = (payload.get("ssid") or "").strip()
-            pwd  = payload.get("password", "")
-            if not ssid:
-                return self._reply(400, {"error": "ssid required (use \"\" to forget)"})
-            send_line({"cmd": "wifi_set", "ssid": ssid, "password": pwd})
+            cmd, err = _wifi_provision_command(payload)
+            if err:
+                return self._reply(400, {"error": err})
+            send_line(cmd)
+            if not cmd.get("ssid"):
+                return self._reply(200, {"ok": True,
+                                         "note": "wifi credentials clear command sent"})
             return self._reply(200, {"ok": True,
                                      "note": "credentials sent to device; "
                                              "watch ack:status for wifi_connected"})
@@ -1214,31 +1896,14 @@ class CardHandler(BaseHTTPRequestHandler):
             # maps to a hot-zone action against the last rendered view.
             # A touch is also proof of life — update last_seen so the
             # heartbeat reflects "the device is interactive right now".
-            DEVICE_TELEMETRY["last_status_seen_ms"] = int(time.time() * 1000)
             try:
                 x, y = int(payload["x"]), int(payload["y"])
             except (KeyError, TypeError, ValueError):
                 return self._reply(400, {"error": "x,y required"})
-            action = None
-            for hz in VIEW_HOT_ZONES:
-                x0, y0, x1, y1 = hz["rect"]
-                if x0 <= x <= x1 and y0 <= y <= y1:
-                    action = hz["action"]; break
-            if action is None:
-                return self._reply(200, {"ok": True, "action": None})
-            log(f"[touch] ({x},{y}) → {action}")
-            # Dispatch internally — equivalent of hitting the endpoint
-            # by hand. Keeps logic in one place.
-            if action == "back":     return self._reply(200, _internal_dispatch("back"))
-            if action == "settings": return self._reply(200, _internal_dispatch("settings"))
-            if action == "refresh":  schedule_push(); return self._reply(200, {"action": "refresh"})
-            if action == "sleep":    return self._reply(200, _internal_dispatch("sleep"))
-            if action == "restart":  send_line({"cmd": "restart"}); return self._reply(200, {"action": "restart"})
-            if action == "repair":   send_line({"cmd": "unpair"});  return self._reply(200, {"action": "repair"})
-            if action == "clear":
-                with WIDGET_LOCK: WIDGET_CACHE.clear()
-                schedule_push(); return self._reply(200, {"action": "clear"})
-            return self._reply(200, {"ok": True, "action": action})
+            result = _dispatch_touch_xy(
+                x, y, hold_ms=payload.get("hold_ms"), source="http"
+            )
+            return self._reply(200, {"ok": True, **result})
 
         return self._reply(404, {"error": f"unknown POST {path!r}"})
 
@@ -1247,17 +1912,69 @@ def _internal_dispatch(action: str) -> dict:
     """Helper for /touch — runs the side-effects of a chip action without
     re-entering the HTTP layer."""
     global IN_SETTINGS
-    if action == "settings":
-        with VIEW_LOCK: IN_SETTINGS = True
-        schedule_push(); return {"action": "settings"}
-    if action == "back":
-        with VIEW_LOCK: IN_SETTINGS = False
-        schedule_push(); return {"action": "back"}
+    action = str(action or "").strip().lower()
+    if action in ("settings", "status"):
+        with VIEW_LOCK:
+            IN_SETTINGS = True
+        _transition_ui_state("STATUS", f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state="STATUS", frame_request="scheduled"
+        )
+    if action in ("back", "home", "dismiss"):
+        with VIEW_LOCK:
+            IN_SETTINGS = False
+        _transition_ui_state(_resting_ui_state(), f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state=_resting_ui_state(), frame_request="scheduled"
+        )
+    if action in ("refresh", "reload"):
+        with VIEW_LOCK:
+            IN_SETTINGS = False
+        _transition_ui_state(_resting_ui_state(), f"action:{action}")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(
+            action, True, state=_resting_ui_state(), frame_request="scheduled"
+        )
+    if action == "retry":
+        if not UI_LAST_ERROR:
+            log("[action] retry no error / nothing to retry")
+            return _action_result(
+                action, True, "no-error", frame_request="none"
+            )
+        _clear_ui_error("retry action")
+        schedule_push(reason=f"action:{action}")
+        return _action_result(action, True, frame_request="scheduled")
     if action == "sleep":
         if render_and_push_sleep():
+            if not _deep_sleep_enabled_for_selected_profile():
+                power = _power_status()
+                log("[sleep] sleep card pushed; deep sleep skipped "
+                    f"profile={_selected_profile_label()} "
+                    f"status={power.get('deep_sleep_status')}")
+                return _action_result(
+                    action, True, "sleep-card-only",
+                    mode="sleep-card",
+                    deep_sleep=False,
+                    deep_sleep_status=power.get("deep_sleep_status"),
+                )
             send_line({"cmd": "sleep_now", "wake_after_sec": 0})
-        return {"action": "sleep"}
-    return {"action": action}
+            return _action_result(action, True, command="sleep_now")
+        return _action_result(action, False, "sleep-render-failed")
+    if action == "restart":
+        send_line({"cmd": "restart"})
+        return _action_result(action, True, command="restart")
+    if action == "repair":
+        send_line({"cmd": "unpair"})
+        return _action_result(action, True, command="unpair")
+    if action == "clear":
+        with WIDGET_LOCK: WIDGET_CACHE.clear()
+        schedule_push(reason=f"action:{action}")
+        return _action_result(action, True, frame_request="scheduled")
+    if action == "confirm":
+        return _action_result(action, False, "stub-no-confirm-target")
+    return _action_result(action or "unknown", False, "unknown-action")
 
 
 # ---- Periodic re-push (for widget freshness while idle) ----
@@ -1308,8 +2025,8 @@ def _read_quiet_hours() -> "dict | None":
 
 def _quiet_hours_loop():
     """Background watcher: when wall-clock crosses interests.yaml's
-    quiet_hours.start, push the business-card frame + put the device to
-    deep sleep. Fires at most once per calendar day."""
+    quiet_hours.start, push the business-card frame and use the selected
+    profile's sleep behavior. Fires at most once per calendar day."""
     last_fired_date = ""
     while True:
         time.sleep(45)   # cheap enough; resolution well within the 1-min start
@@ -1400,8 +2117,7 @@ def _start_side_serial_reader(port: str):
     Wi-Fi, so we just need to listen on one of them. Lower-risk than
     exposing /status_report on 0.0.0.0."""
     try:
-        import serial
-        ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        ser = _open_serial_no_reset(port, SERIAL_BAUD)
         time.sleep(0.2)
     except Exception as e:
         log(f"[side-serial] open {port} failed: {e!r}")
@@ -1419,8 +2135,23 @@ def _start_side_serial_reader(port: str):
     threading.Thread(target=_reader, daemon=True).start()
 
 
-def pick_transport(kind: str, port: str | None) -> Transport:
-    if port:
+def _resolve_wifi_port(serial_or_wifi_port: str | None,
+                       wifi_port: int | None) -> int:
+    if wifi_port:
+        return int(wifi_port)
+    if serial_or_wifi_port:
+        try:
+            return int(serial_or_wifi_port)
+        except ValueError:
+            sys.exit("--transport wifi expects --host plus a numeric --port, "
+                     "or use --wifi-port for the device HTTP port")
+    return _BURST_HTTP_PORT
+
+
+def pick_transport(kind: str, port: str | None,
+                   *, host: str | None = None,
+                   wifi_port: int | None = None) -> Transport:
+    if kind != "wifi" and port:
         return SerialTransport(port)
     candidates = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
     if kind == "serial":
@@ -1429,6 +2160,10 @@ def pick_transport(kind: str, port: str | None) -> Transport:
     if kind == "ble":
         return BLETransport()
     if kind == "wifi":
+        if host:
+            p = _resolve_wifi_port(port, wifi_port)
+            log(f"[transport] using Wi-Fi {host}:{p}")
+            return WiFiTransport(host, p)
         peer = discover_wifi_device(timeout_s=5.0)
         if not peer: sys.exit("no _ai-desk-card._tcp peer found on LAN")
         ip, p = peer
@@ -1454,17 +2189,41 @@ def pick_transport(kind: str, port: str | None) -> Transport:
     return BLETransport()
 
 
-def main():
-    global TRANSPORT
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
+    ap.add_argument("--host",
+                    help="PaperS3 device IP/host for --transport wifi")
+    ap.add_argument("--wifi-port", type=int, default=None,
+                    help="PaperS3 HTTP frame port for --transport wifi")
     ap.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"),
                     default="auto")
+    ap.add_argument("--profile", choices=card_profiles.profile_choices(include_auto=True),
+                    default="auto",
+                    help="device profile hint; auto keeps firmware-based detection")
+    ap.add_argument("--http-host", default="127.0.0.1",
+                    help="daemon HTTP bind host; use 0.0.0.0 only when a device must call back over Wi-Fi")
     ap.add_argument("--http-port", type=int, default=9877)
     ap.add_argument("--owner", default=os.environ.get("USER", ""))
-    args = ap.parse_args()
+    return ap
 
-    TRANSPORT = pick_transport(args.transport, args.port)
+
+def main():
+    global TRANSPORT, REQUESTED_PROFILE
+    args = build_arg_parser().parse_args()
+
+    REQUESTED_PROFILE = args.profile
+    if REQUESTED_PROFILE != "auto":
+        profile = card_profiles.get_profile(REQUESTED_PROFILE)
+        log(f"[profile] requested={profile['name']} device={profile['device_name']} "
+            f"preferred_transport={profile['preferred_transport']}")
+
+    TRANSPORT = pick_transport(
+        args.transport,
+        args.port,
+        host=args.host,
+        wifi_port=args.wifi_port,
+    )
     # If Wi-Fi is the primary push channel AND a USB serial cable is
     # plugged in, also open it read-only for the device's inbound JSON
     # lines (status_report / touch). Without this, arch-A Wi-Fi-only mode
@@ -1479,9 +2238,12 @@ def main():
         log(f"[transport] inter-line delay: {SEND_LINE_INTER_DELAY_S*1000:.0f}ms")
 
     def _handshake():
+        _clear_ui_error("transport connected")
+        _transition_ui_state(_resting_ui_state(), "transport connected")
         if args.owner:
             send_line({"cmd": "owner", "name": args.owner})
         send_line({"time": [int(time.time()), tz_offset_seconds()]})
+        send_line({"cmd": "ping"})
         if WIDGET_CACHE:
             schedule_push()
 
@@ -1498,8 +2260,8 @@ def main():
         # transport. USB and Wi-Fi don't have anything to power down.
         threading.Thread(target=_burst_power_down_loop, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), CardHandler)
-    log(f"[http] listening on 127.0.0.1:{args.http_port}")
+    srv = ThreadingHTTPServer((args.http_host, args.http_port), CardHandler)
+    log(f"[http] listening on {args.http_host}:{args.http_port}")
     log(f"[ready] ai-desk-card daemon v0.8 — push widgets via POST /widget")
     try: srv.serve_forever()
     except KeyboardInterrupt: log("\n[exit] bye")

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "default_profile": "m5paper-v1.1",
+  "profiles": {
+    "m5paper-v1.1": {
+      "aliases": ["card", "m5paper", "m5paper-v1.1", "M5Paper V1.1"],
+      "device_name": "M5Paper V1.1",
+      "platformio_env": "card",
+      "logical_width": 540,
+      "logical_height": 960,
+      "display_format": "4bpp grayscale",
+      "preferred_transport": "Wi-Fi",
+      "firmware_tokens": ["ai-desk-card", "m5-paper-buddy"],
+      "supported_features": {
+        "frame_rendering": true,
+        "touch": true,
+        "ui_actions": true,
+        "widgets": true,
+        "ble": true,
+        "deep_sleep": true,
+        "battery_policy": true
+      },
+      "power": {
+        "default_mode": "always-on",
+        "supported_modes": ["always-on", "sleep-card", "deep-sleep"],
+        "idle_timeout_minutes": 0,
+        "wake_sources": ["touch", "rtc-timer", "usb-power", "ble-wake"],
+        "wake_recovery": "device boots and daemon repushes the current frame",
+        "deep_sleep": {
+          "enabled": true,
+          "status": "supported"
+        },
+        "ble": {
+          "status": "supported"
+        }
+      }
+    },
+    "paper-s3": {
+      "aliases": [
+        "paper-s3",
+        "papers3",
+        "m5paper-s3",
+        "M5Paper S3",
+        "M5Stack PaperS3",
+        "ESP32-S3 Paper"
+      ],
+      "device_name": "M5Stack PaperS3",
+      "platformio_env": "paper-s3",
+      "logical_width": 540,
+      "logical_height": 960,
+      "display_format": "4bpp grayscale",
+      "preferred_transport": "Wi-Fi",
+      "firmware_tokens": ["paper-s3-frame"],
+      "supported_features": {
+        "frame_rendering": true,
+        "touch": true,
+        "ui_actions": true,
+        "widgets": true,
+        "ble": false,
+        "deep_sleep": false,
+        "battery_policy": true
+      },
+      "power": {
+        "default_mode": "always-on",
+        "supported_modes": ["always-on", "idle-low-power", "sleep-card"],
+        "idle_timeout_minutes": 0,
+        "wake_sources": ["touch-while-awake", "usb-reset", "power-key-reset"],
+        "wake_recovery": "daemon repushes a fresh frame after the device reports status",
+        "deep_sleep": {
+          "enabled": false,
+          "status": "unsupported",
+          "enable_flag": "PAPERS3_ENABLE_DEEP_SLEEP",
+          "reason": "not enabled until wake source and Wi-Fi recovery are verified on hardware"
+        },
+        "ble": {
+          "status": "unsupported",
+          "reason": "M5Paper V1.1 BLE exists, but PaperS3 BLE is not wired into this profile"
+        }
+      },
+      "onboarding": {
+        "first_dashboard": "configured-dashboard",
+        "configure_interests_before_dashboard": true,
+        "configure_profile_before_dashboard": true,
+        "schedule_handoff_after_interests": true,
+        "sleep_flow": "sleep-card"
+      }
+    }
+  }
+}

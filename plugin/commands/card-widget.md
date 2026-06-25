@@ -9,4 +9,12 @@ Subcommands:
 - `pair-status` — show daemon ↔ device connection state
 - `unpair` — forward unpair to device
 
+PaperS3 demo widgets:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget status
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget text
+.\.pio-venv\Scripts\python.exe scripts\demo_papers3_widgets.py --profile paper-s3 --widget weather-mock
+```
+
 !`bash "$CLAUDE_PLUGIN_ROOT/scripts/widget.sh" "$ARGUMENTS"`

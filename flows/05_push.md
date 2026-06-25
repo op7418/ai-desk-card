@@ -64,7 +64,7 @@ curl -sf -X POST "${CARD_DAEMON_URL:-http://127.0.0.1:9877}/widget" \
   -H 'Content-Type: application/json' \
   -d @- <<'JSON'
 {
-  "slot": 0,
+  "slot": "top-left",
   "type": "weather",
   "data": {
     "city": "Beijing",
@@ -107,7 +107,7 @@ degree symbol just write "C" inline (`22°C` → `22C`).
 ## Removing a widget
 
 ```bash
-curl -sf -X DELETE "${CARD_DAEMON_URL:-http://127.0.0.1:9877}/widget?slot=0"
+curl -sf -X DELETE "${CARD_DAEMON_URL:-http://127.0.0.1:9877}/widget?slot=top-left"
 # Or clear all:
 curl -sf -X DELETE "${CARD_DAEMON_URL:-http://127.0.0.1:9877}/widget"
 ```

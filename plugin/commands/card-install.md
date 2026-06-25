@@ -8,4 +8,17 @@ Subcommands:
             (build first with `pio run -e card` from `ai-desk-card/`).
             Always prompts for confirmation; sha256 check on download path.
 
+PaperS3 / Windows PowerShell path:
+Preferred first install / post-flash command:
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py onboard --profile paper-s3 --port COM3
+```
+
+```powershell
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py build --profile paper-s3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py upload --profile paper-s3 --port COM3
+.\.pio-venv\Scripts\python.exe scripts\card_cli.py monitor --profile paper-s3 --port COM3
+```
+
 !`bash "$CLAUDE_PLUGIN_ROOT/scripts/install.sh" "$ARGUMENTS"`

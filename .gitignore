@@ -1,5 +1,7 @@
 .DS_Store
 .pio/
+.pio-core/
+.pio-venv/
 .pioenvs/
 .piolibdeps/
 __pycache__/

@@ -1,7 +1,7 @@
 {
   "name": "ai-desk-card",
   "version": "0.10.1",
-  "description": "AI Desk Card — a single Skill that drives a glanceable e-ink 副屏. v0.10 supports BOTH M5Paper V1.1 (540×960 grayscale) and M5Paper Color (600×400 Spectra 6 6-color + SHT40 + audio + buttons + RGB LEDs). Server-side-rendered frames pushed over Wi-Fi / USB / BLE. Agent reads ../SKILL.md and routes through 8 sub-flows including the Paper Color profile. 17 widget types incl. Color-exclusive ambient. Claude Code users get slash commands as a convenience layer (/card-onboard, /card-widget, /card-wifi-setup, /card-refresh, /card-sleep, /card-start, /card-stop, /card-status, /card-install) — but the SKILL.md entry point is the primary, agent-agnostic interface.",
+  "description": "AI Desk Card — a single Skill that drives a glanceable e-ink 副屏. v0.10 supports M5Paper V1.1 (540×960 grayscale), M5Stack PaperS3 via the paper-s3 USB serial profile, and M5Paper Color (600×400 Spectra 6 6-color + SHT40 + audio + buttons + RGB LEDs). Server-side-rendered frames pushed over Wi-Fi / USB / BLE depending on profile. Agent reads ../SKILL.md and routes through profile-aware flows. 17 widget types incl. Color-exclusive ambient. Claude Code users get slash commands as a convenience layer (/card-onboard, /card-widget, /card-wifi-setup, /card-refresh, /card-sleep, /card-start, /card-stop, /card-status, /card-install) — but the SKILL.md entry point is the primary, agent-agnostic interface.",
   "author": "op7418",
   "homepage": "https://github.com/op7418/ai-desk-card",
   "commands": "./commands",

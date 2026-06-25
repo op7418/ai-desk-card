@@ -114,5 +114,6 @@ catching the 404 silently.
 - Native loop: stop the loop in the agent's UI / cancel the scheduled
   wakeup
 - Cron: `crontab -e` and remove the line
-- Tell the user the card will keep showing the last frame indefinitely
-  (e-ink retains at 0 W)
+- Tell the user the card will keep showing the last frame indefinitely. On
+  M5Paper V1.1 deep sleep this is near-zero power; on PaperS3 it is the
+  normal sleep-card/always-on behavior.
