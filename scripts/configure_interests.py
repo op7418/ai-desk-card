@@ -155,7 +155,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--slots",
         help="Comma-separated slot=widget map. Defaults are profile-specific.",
     )
-    parser.add_argument("--cadence", default="30m")
+    parser.add_argument("--cadence", default="10m")
     parser.add_argument("--hours", default="08-22")
     parser.add_argument("--days", default="mon-fri")
     parser.add_argument("--timezone", default=os.environ.get("TZ", "Asia/Shanghai"))

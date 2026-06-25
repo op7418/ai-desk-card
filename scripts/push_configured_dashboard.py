@@ -80,7 +80,7 @@ def _load_interests(path: str | None) -> dict:
     return result
 
 
-def _weather_payload(slot: str, sources: dict) -> dict:
+def _weather_payload(slot: str, sources: dict, *, require_live: bool = False) -> dict | None:
     weather = sources.get("weather") or {}
     city = weather.get("city") or "Unknown"
     live = _open_meteo_weather(city)
@@ -90,6 +90,8 @@ def _weather_payload(slot: str, sources: dict) -> dict:
             "type": "weather",
             "data": live,
         }
+    if require_live:
+        return None
     return {
         "slot": slot,
         "type": "weather",
@@ -123,7 +125,7 @@ def _open_meteo_weather(city: str) -> dict | None:
     })
     url = f"https://api.open-meteo.com/v1/forecast?{params}"
     try:
-        with urllib.request.urlopen(url, timeout=5) as res:
+        with urllib.request.urlopen(url, timeout=20) as res:
             data = json.loads(res.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return None
@@ -180,8 +182,28 @@ def _todo_payload(slot: str, sources: dict) -> dict:
     }
 
 
-def _ai_status_payload(slot: str, sources: dict) -> dict:
+def _load_codex_usage() -> dict:
+    try:
+        import push_codex_ai_status as codex
+        usage = codex.load_app_server_usage()
+    except Exception:
+        return {}
+    return usage if codex.has_quota(usage) else {}
+
+
+def _ai_status_payload(slot: str, sources: dict, codex_usage: dict | None = None,
+                       *, require_live: bool = False) -> dict | None:
     source = (sources.get("ai-status") or {}).get("source") or "codex"
+    if source == "codex" and codex_usage:
+        import push_codex_ai_status as codex
+        return codex.build_payload(
+            slot=slot,
+            session_name="codex",
+            task="Codex usage remaining",
+            usage=codex_usage,
+        )
+    if require_live and source == "codex":
+        return None
     return {
         "slot": slot,
         "type": "ai-status",
@@ -206,27 +228,35 @@ def _scratch_payload(slot: str, widget: str) -> dict:
 
 
 def build_payloads(interests_path: str | None = None,
-                   now_iso: str | None = None) -> list[dict]:
+                   now_iso: str | None = None,
+                   codex_usage_loader=None,
+                   only_widgets: set[str] | None = None,
+                   require_live: bool = False) -> list[dict]:
     config = _load_interests(interests_path)
     slots = config["slots"]
     sources = config["data_sources"]
     now_iso = now_iso or datetime.now().replace(microsecond=0).isoformat()
+    codex_usage = codex_usage_loader() if codex_usage_loader else None
 
     payloads = []
     for slot in SLOT_ORDER:
         widget = slots.get(slot)
         if not widget:
             continue
+        if only_widgets and widget not in only_widgets:
+            continue
         if widget == "weather":
-            payloads.append(_weather_payload(slot, sources))
+            payload = _weather_payload(slot, sources, require_live=require_live)
         elif widget == "calendar":
-            payloads.append(_calendar_payload(slot, sources, now_iso))
+            payload = _calendar_payload(slot, sources, now_iso)
         elif widget == "todo":
-            payloads.append(_todo_payload(slot, sources))
+            payload = _todo_payload(slot, sources)
         elif widget == "ai-status":
-            payloads.append(_ai_status_payload(slot, sources))
+            payload = _ai_status_payload(slot, sources, codex_usage, require_live=require_live)
         else:
-            payloads.append(_scratch_payload(slot, widget))
+            payload = _scratch_payload(slot, widget)
+        if payload:
+            payloads.append(payload)
     return payloads
 
 
@@ -304,12 +334,23 @@ def _ensure_widget_view(daemon_url: str, before: dict,
 
 def run(args: argparse.Namespace) -> int:
     daemon_url = args.daemon_url.rstrip("/")
-    payloads = build_payloads(args.interests)
+    only_widgets = _parse_only_widgets(args.only)
+    payloads = build_payloads(
+        args.interests,
+        codex_usage_loader=_load_codex_usage,
+        only_widgets=only_widgets,
+        require_live=bool(only_widgets),
+    )
+    if only_widgets:
+        args.no_clear = True
 
     print(f"[dashboard] daemon={daemon_url}")
     print(f"[dashboard] interests={Path(args.interests).expanduser()}")
     for payload in payloads:
         print(f"[dashboard] configured widget type={payload['type']} slot={payload['slot']}")
+    if not payloads:
+        print("[dashboard] no live widget data; leaving current card unchanged")
+        return 0
 
     if args.dry_run:
         print(json.dumps(payloads, ensure_ascii=False, indent=2))
@@ -317,8 +358,11 @@ def run(args: argparse.Namespace) -> int:
 
     code, pair = _request_json("GET", daemon_url, "/pair-status")
     if code != 200 or not pair.get("connected"):
-        print(f"[dashboard] daemon/device not connected: {pair}")
-        return 2
+        heartbeat_code, heartbeat = _request_json("GET", daemon_url, "/heartbeat")
+        if heartbeat_code != 200 or not heartbeat.get("alive"):
+            print(f"[dashboard] daemon/device not connected: {pair}")
+            return 2
+        print("[dashboard] pair-status disconnected but heartbeat is alive; attempting refresh")
 
     code, before = _request_json("GET", daemon_url, "/frame-status")
     if code != 200:
@@ -361,9 +405,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interests", default=default_interests_path())
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--poll", type=float, default=0.5)
+    parser.add_argument("--only", default="", help="Comma-separated widget types to update, e.g. weather,ai-status.")
     parser.add_argument("--no-clear", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
+
+
+def _parse_only_widgets(value: str) -> set[str] | None:
+    widgets = {part.strip() for part in value.split(",") if part.strip()}
+    return widgets or None
 
 
 def main(argv: list[str] | None = None) -> int:

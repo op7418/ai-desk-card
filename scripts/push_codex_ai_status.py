@@ -189,6 +189,9 @@ def _drain_stream(stream, sink: list[str]) -> None:
 
 def app_server_request(methods: list[tuple[int, str, object]], timeout_s: float = APP_SERVER_TIMEOUT_S) -> dict[int, dict]:
     """Run a short-lived Codex app-server stdio session and return responses."""
+    popen_kwargs = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(
         _codex_app_server_command(),
         stdin=subprocess.PIPE,
@@ -198,6 +201,7 @@ def app_server_request(methods: list[tuple[int, str, object]], timeout_s: float 
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **popen_kwargs,
     )
     out_queue: queue.Queue = queue.Queue()
     stderr_lines: list[str] = []

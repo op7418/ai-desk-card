@@ -478,7 +478,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-schedule", action="store_true")
     parser.add_argument("--interests-output")
     parser.add_argument("--interests-slots")
-    parser.add_argument("--cadence", default="30m")
+    parser.add_argument("--cadence", default="10m")
     parser.add_argument("--hours", default="08-22")
     parser.add_argument("--days", default="mon-fri")
     parser.add_argument("--timezone")

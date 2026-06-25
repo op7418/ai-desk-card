@@ -188,7 +188,7 @@ class OnboardPaperS3Test(unittest.TestCase):
         self.assertIn("--city", calls[0])
         self.assertIn("Shanghai", calls[0])
         self.assertIn("--cadence", calls[0])
-        self.assertIn("30m", calls[0])
+        self.assertIn("10m", calls[0])
         self.assertIn("configure_profile.py", "/".join(calls[1]).replace("\\", "/"))
         self.assertIn("--name", calls[1])
         self.assertIn("Lucy", calls[1])

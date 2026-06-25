@@ -19,7 +19,7 @@ class ConfigureInterestsTest(unittest.TestCase):
         self.assertIn("top-right: calendar", text)
         self.assertIn("middle: todo", text)
         self.assertIn("bottom: inbox", text)
-        self.assertIn('cadence: "30m"', text)
+        self.assertIn('cadence: "10m"', text)
         self.assertIn('timezone: "Asia/Shanghai"', text)
 
     def test_papers3_profile_yaml_matches_dashboard_layout(self):
