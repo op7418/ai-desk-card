@@ -982,6 +982,43 @@ class CardHandler(BaseHTTPRequestHandler):
                                   "note": "device will enter deep sleep; "
                                           "e-ink retains last frame"})
 
+    # Socket timeout so a misbehaving peer can't hold a handler thread
+    # forever with a half-sent request (matters once we bind beyond loopback).
+    timeout = 30
+
+    # Privilege model for non-loopback binds (--http-host):
+    #   loopback (127.0.0.1/::1)  -> full API (agent on the host)
+    #   --allow-peer IPs          -> viewer only: GET /frame.png, nothing else
+    #   anything else             -> rejected in CardHTTPServer.verify_request
+    # Rationale: an allow-listed viewer is typically a browser, and any page
+    # it visits can fire cross-origin POSTs; it must never reach control
+    # endpoints like /provision-wifi or /restart.
+    def _peer_is_loopback(self) -> bool:
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
+    def _reject_non_loopback(self) -> bool:
+        if self._peer_is_loopback():
+            return False
+        log(f"[security] rejected {self.command} {self.path} "
+            f"from {self.client_address[0]} (viewer peers are GET /frame.png only)")
+        self._reply(403, {"error": "forbidden"})
+        return True
+
+    # Shared by POST /widgets/preview and GET /frame.png
+    def _serve_preview(self):
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            from card_render import render_preview_png
+        except ImportError as e:
+            return self._reply(500, {"error": f"Pillow missing: {e}"})
+        try:
+            png = render_preview_png(_widget_snapshot(), status=_bar_status())
+        except Exception as e:
+            return self._reply(500, {"error": f"render failed: {e!r}"})
+        return self._reply_png(200, png)
+
     def _reply_png(self, code: int, png: bytes):
         self.send_response(code)
         self.send_header("Content-Type", "image/png")
@@ -992,6 +1029,14 @@ class CardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = (self.path or "/").split("?", 1)[0]
+        if path == "/frame.png":
+            # GET alias of /widgets/preview so a plain browser <img> tag
+            # (old Android reader, Kindle, any LAN device with a browser)
+            # can poll the current frame. This is the ONLY route a
+            # non-loopback (allow-listed) peer may call.
+            return self._serve_preview()
+        if self._reject_non_loopback():
+            return
         if path == "/widget":
             return self._reply(200, {"widgets": _widget_snapshot()})
         if path == "/pair-status":
@@ -1022,6 +1067,8 @@ class CardHandler(BaseHTTPRequestHandler):
         return self._reply(404, {"error": f"unknown GET {path!r}"})
 
     def do_DELETE(self):
+        if self._reject_non_loopback():
+            return
         path = (self.path or "/").split("?", 1)[0]
         if path == "/widget":
             qs = parse_qs(urlparse(self.path).query)
@@ -1036,6 +1083,8 @@ class CardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global IN_SETTINGS
+        if self._reject_non_loopback():
+            return
         path = (self.path or "/").split("?", 1)[0]
         try:
             n = int(self.headers.get("Content-Length") or "0")
@@ -1068,17 +1117,7 @@ class CardHandler(BaseHTTPRequestHandler):
                                      "push_scheduled": TRANSPORT is not None and TRANSPORT.connected()})
 
         if path == "/widgets/preview":
-            try:
-                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-                from card_render import render_preview_png
-            except ImportError as e:
-                return self._reply(500, {"error": f"Pillow missing: {e}"})
-            try:
-                png = render_preview_png(_widget_snapshot(),
-                                          status=_bar_status())
-            except Exception as e:
-                return self._reply(500, {"error": f"render failed: {e!r}"})
-            return self._reply_png(200, png)
+            return self._serve_preview()
 
         if path == "/unpair":
             send_line({"cmd": "unpair"})
@@ -1454,6 +1493,22 @@ def pick_transport(kind: str, port: str | None) -> Transport:
     return BLETransport()
 
 
+# Peers allowed to reach the HTTP API when bound beyond loopback.
+ALLOWED_PEERS: set = set()
+
+
+# Reject unknown peers at accept time — before a handler thread is spawned
+# or any request bytes are parsed. Handler-level gating alone would let
+# arbitrary LAN hosts hold handler threads with half-sent requests.
+class CardHTTPServer(ThreadingHTTPServer):
+    def verify_request(self, request, client_address):
+        peer = client_address[0]
+        if peer in ("127.0.0.1", "::1") or peer in ALLOWED_PEERS:
+            return True
+        log(f"[security] dropped connection from {peer}")
+        return False
+
+
 def main():
     global TRANSPORT
     ap = argparse.ArgumentParser()
@@ -1461,8 +1516,18 @@ def main():
     ap.add_argument("--transport", choices=("auto", "serial", "ble", "wifi"),
                     default="auto")
     ap.add_argument("--http-port", type=int, default=9877)
+    # Bind beyond loopback + explicit peer allow-list, so a LAN device with
+    # a browser can poll GET /frame.png as a zero-firmware display client.
+    # Default behaviour (loopback only) is unchanged.
+    ap.add_argument("--http-host", default="127.0.0.1",
+                    help="HTTP bind address; set 0.0.0.0 with --allow-peer "
+                         "to serve /frame.png to LAN viewers (default: loopback only)")
+    ap.add_argument("--allow-peer", action="append", default=[],
+                    help="LAN client IP allowed to GET /frame.png (viewer-only, "
+                         "no control endpoints); repeatable")
     ap.add_argument("--owner", default=os.environ.get("USER", ""))
     args = ap.parse_args()
+    ALLOWED_PEERS.update(args.allow_peer)
 
     TRANSPORT = pick_transport(args.transport, args.port)
     # If Wi-Fi is the primary push channel AND a USB serial cable is
@@ -1498,8 +1563,8 @@ def main():
         # transport. USB and Wi-Fi don't have anything to power down.
         threading.Thread(target=_burst_power_down_loop, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), CardHandler)
-    log(f"[http] listening on 127.0.0.1:{args.http_port}")
+    srv = CardHTTPServer((args.http_host, args.http_port), CardHandler)
+    log(f"[http] listening on {args.http_host}:{args.http_port}")
     log(f"[ready] ai-desk-card daemon v0.8 — push widgets via POST /widget")
     try: srv.serve_forever()
     except KeyboardInterrupt: log("\n[exit] bye")

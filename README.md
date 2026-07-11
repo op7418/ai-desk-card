@@ -260,6 +260,32 @@ quiet_hours:
 
 架构 C 是最爱：屏挂在桌边几个月不充电，AI Agent 推内容时 BLE 唤醒一次 → 拉 Wi-Fi → HTTP 推帧 → 30 秒 linger 后断 Wi-Fi。一次推送约 0.2 mAh，24 次/天 × 6 个月 = 1150 mAh 电池。
 
+## 没有 M5Paper？带浏览器的旧设备也能当显示端（实验性）
+
+家里吃灰的旧 Android 墨水屏阅读器、老平板、Kindle——只要有个能跑 `<img>` 的浏览器，就能零固件接入：daemon 侧渲染不变，设备端用浏览器轮询当前帧。
+
+```bash
+# 1) 以局域网取帧模式启动 daemon（默认仍是仅环回，行为不变）
+python3 daemon/card_daemon.py --http-host 0.0.0.0 --allow-peer <设备IP>
+
+# 2) 设备浏览器打开一个极简轮询页（也可以直接开 http://<Mac IP>:9877/frame.png 手动刷新）
+```
+
+```html
+<img id="f" style="height:100vh"><script>
+setInterval(function(){document.getElementById('f').src=
+  'http://<Mac IP>:9877/frame.png?t='+Date.now()},60000);
+</script>
+```
+
+安全模型（绑定非环回时自动生效）：
+
+- 白名单外的 IP 在 TCP 接受层直接断开（`verify_request`），不进请求解析；
+- 白名单内的"显示端"**只能 `GET /frame.png`**——全部控制端点（推 widget、`/provision-wifi`、`/restart` 等）仍然只有本机环回可用，防止显示端浏览器被任意网页用跨域 POST 当跳板；
+- 不传 `--http-host` 时一切照旧（127.0.0.1）。
+
+实测：得到阅读器（Onyx 代工，Android 9 + Chrome 83）以 60 秒间隔轮询整天，稳定。
+
 ## 目录结构
 
 ```
