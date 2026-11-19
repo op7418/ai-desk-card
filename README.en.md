@@ -133,6 +133,33 @@ Auto-sleep at 11pm and show my business card.
 
 > ⚠️ **You don't need to pre-install PlatformIO / compilers / Python** — if the Skill detects something missing, it lets the agent install it.
 
+## Another hardware target: iFlytek C1 color e-ink (Android)
+
+The main track targets M5Paper (ESP32 firmware). If you have an **iFlytek C1**
+(1072×1448 color E Ink, Android 8.1 custom ROM) instead, the repo ships a
+complete implementation for it — see [`c1/`](./c1/):
+
+```bash
+cd c1 && ./build.sh && adb install -r C1Assistant.apk
+```
+
+It's not a firmware flash — it's an Android APK that **replaces the system
+screensaver**: a color professional-avatar portrait plus a task list when you
+lock the screen, auto-exit on wake; it pulls content from the data bridge every
+30s and skips the refresh entirely when nothing changed.
+
+| | M5Paper (main track) | iFlytek C1 (`c1/`) |
+|---|---|---|
+| Form | ESP32 firmware | Android APK |
+| Panel | 4.7" mono | 6"+ color |
+| Refresh | firmware-side region refresh | per-window waveform: portrait `GL16` resident / tasks `DU\|RECT` regional |
+| Content source | `daemon/card_daemon.py` | `c1/bridge.py` (same widget model) |
+| Power | deep sleep | in-process timer + Wi-Fi only when needed |
+
+The C1 track hit quite a few ROM-specific traps (the default screensaver isn't a
+Daydream, the panel ships with color disabled, an overlay that deadlocks wake
+broadcasts…). All of it is written up in [`c1/README.md`](./c1/README.md).
+
 ## Install
 
 ### Option 1: One-line install (recommended)
@@ -297,6 +324,12 @@ ai-desk-card/
 │   ├── profile.yaml          ← Your business-card info (shown when sleeping)
 │   ├── qr.png                ← Optional QR
 │   └── avatar.png            ← Optional avatar
+├── c1/                       ← iFlytek C1 color e-ink track (Android APK, independent of the ESP32 main track)
+│   ├── app/                      ← APK sources — com.c1mini.assistant
+│   ├── core/java/                ← Self-contained Eink.java (waveform control) + Prefs.java
+│   ├── build.sh                  ← Builds C1Assistant.apk
+│   ├── bridge.py                 ← C1 data bridge (agent pushes → device pulls)
+│   └── README.md                 ← Architecture, deployment, real-device pitfalls
 ├── data/cjk.ttf              ← CJK font (flashed to LittleFS once)
 ├── platformio.ini
 ├── partitions.csv

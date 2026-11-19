@@ -1,0 +1,10 @@
+# C1 助理数据桥（电脑 192.168.1.18:9877，同 WiFi）
+http://192.168.1.18:9877
+
+# 省电模式：默认每次同步「开 WiFi → 拉取 → 拉完关 WiFi」。
+# 调试阶段想保持 WiFi 常开（否则关 WiFi 会断 adb），取消下一行注释：
+# keep_wifi=1
+
+# 屏保（AssistantDream）和手动 App（AssistantActivity）都读这个文件。
+# adb 临时覆盖地址（仅对手动 App 有效）：
+#   adb shell am start -n com.c1mini.assistant/.AssistantActivity -e daemon http://x.x.x.x:9877

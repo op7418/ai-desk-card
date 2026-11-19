@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AssistantTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:colorBackground">@android:color/white</item>
+        <item name="android:colorAccent">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+
+    <!-- 任务浮层：独立 Dialog Window，可单独设 DU|RECT。
+         关键：关掉遮罩(dim)否则会盖暗主窗口的彩色立绘；关动画避免多刷帧；
+         windowIsFloating=false 让 lp 里的绝对尺寸/坐标精确生效。 -->
+    <style name="AssistantDialogTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:colorBackground">@android:color/white</item>
+    </style>
+</resources>

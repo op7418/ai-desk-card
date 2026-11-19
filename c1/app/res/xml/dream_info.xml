@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 屏保设置页里显示的说明；无独立设置 Activity 时只提供描述 -->
+<dream xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.c1mini.assistant/.AssistantActivity" />

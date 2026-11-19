@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.c1mini.assistant"
+    android:versionCode="2"
+    android:versionName="0.2">
+    <uses-sdk android:minSdkVersion="27" android:targetSdkVersion="27" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.BIND_DREAM_SERVICE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <application
+        android:label="助理"
+        android:theme="@style/AssistantTheme"
+        android:debuggable="true"
+        android:allowBackup="false">
+        <!-- 屏保服务：系统睡眠时自动进入，可替换默认 deskclock 屏保 -->
+        <service
+            android:name=".AssistantDream"
+            android:label="助理屏保"
+            android:exported="true"
+            android:permission="android.permission.BIND_DREAM_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.dreams.DreamService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.dreams.DREAM_META_DATA"
+                android:resource="@xml/dream_info" />
+        </service>
+
+        <activity
+            android:name=".AssistantActivity"
+            android:label="助理"
+            android:screenOrientation="portrait"
+            android:windowDisablePreview="true"
+            android:theme="@style/AssistantTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

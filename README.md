@@ -125,6 +125,30 @@ Skill 会自动：
 
 > ⚠️ **不需要事先装 PlatformIO / 编译器 / Python 环境** — Skill 检测到缺什么会让 Agent 自己装。
 
+## 另一种硬件：讯飞 C1 彩色墨水屏（Android）
+
+主线路跑在 M5Paper（ESP32 固件）。如果你手边是**讯飞 C1**（1072×1448 彩色 E Ink，
+Android 8.1 定制 ROM），仓库里另有一套完整实现 —— 目录 [`c1/`](./c1/)：
+
+```bash
+cd c1 && ./build.sh && adb install -r C1Assistant.apk
+```
+
+它不是"烧固件"，而是装一个 Android APK：**替换掉系统默认屏保**，锁屏时显示
+彩色职业女性立绘 + 任务清单，唤醒自动退出；每 30 秒从数据桥拉一次内容，
+内容没变就零刷屏。
+
+| | M5Paper（主线路） | 讯飞 C1（`c1/`） |
+|---|---|---|
+| 形态 | ESP32 固件 | Android APK |
+| 屏幕 | 4.7" 黑白 | 6.0"+ 彩色 |
+| 刷新 | 固件侧分区刷新 | per-window 波形：立绘 `GL16` 常驻 / 任务 `DU\|RECT` 局刷 |
+| 内容源 | `daemon/card_daemon.py` | `c1/bridge.py`（同一套 widget 模型） |
+| 耗电 | deep sleep | 进程内定时 + 按需开 WiFi |
+
+C1 那套踩过不少这台 ROM 的坑（默认屏保不是 Daydream、面板默认关色、overlay
+卡死导致唤醒广播收不到等），都记在 [`c1/README.md`](./c1/README.md)。
+
 ## 安装
 
 ### 方式一：一行命令（推荐）
@@ -289,6 +313,12 @@ ai-desk-card/
 │   ├── profile.yaml          ← 你的电子名片信息（息屏时显示）
 │   ├── qr.png                ← 可选 QR
 │   └── avatar.png            ← 可选头像
+├── c1/                       ← 讯飞 C1 彩色墨水屏方案（Android APK，独立于 ESP32 主线）
+│   ├── app/                      ← APK 源码 com.c1mini.assistant
+│   ├── core/java/                ← 自包含 Eink.java（波形控制）+ Prefs.java
+│   ├── build.sh                  ← 构建 C1Assistant.apk
+│   ├── bridge.py                 ← C1 数据桥（AI Agent 推 → 设备拉）
+│   └── README.md                 ← 架构、部署、真机踩坑
 ├── data/cjk.ttf              ← CJK 字体（首次烧到 LittleFS）
 ├── platformio.ini
 ├── partitions.csv

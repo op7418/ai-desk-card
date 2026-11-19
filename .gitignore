@@ -14,3 +14,9 @@ build/
 dist/
 *.log
 *.tmp
+
+# C1 讯飞墨水屏方案：运行时状态与构建产物
+c1/widget_state.json
+c1/C1Assistant.apk
+c1/C1Assistant.apk.idsig
+c1/build/

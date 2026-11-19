@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/white">
+
+    <!-- 立绘层：主窗口，GL16，只画一次。宽度在代码里按屏幕 52% 动态设。
+         fitEnd：保持比例、按最小边缩放、水平居中贴底，坐标可被代码精确推算
+         （眼睛窗口用同一套 scale 计算，见 AssistantViewHost.showBlinkWindow）。
+         注意：绝不能开 adjustViewBounds —— 它会让 ImageView 自己改高度，
+         破坏 fitEnd 的可预测缩放，导致人物变小、眼睛窗口对不上。 -->
+    <ImageView
+        android:id="@+id/avatar"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitEnd"
+        android:contentDescription="助理立绘" />
+
+</FrameLayout>

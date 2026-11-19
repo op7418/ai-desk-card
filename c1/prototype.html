@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C1 助理屏保 · 局部刷新原型</title>
+<style>
+  :root{
+    --bg:#0e0e10; --panel:#1a1a1d; --panel2:#232327; --line:#333338;
+    --txt:#e8e8ea; --muted:#9a9aa2; --accent:#7aa2f7; --accent2:#9ece6a;
+    --warn:#e0af68; --dirty:#e05f6b;
+    --paper:#f4f2ec; --ink:#1a1a1a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.5;padding:24px}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:20px;font-weight:600;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  .cols{display:grid;grid-template-columns:minmax(380px,520px) 1fr;gap:28px;align-items:start}
+
+  /* C1 panel */
+  .device{background:#2a2a2e;border:8px solid #3a3a3f;border-radius:18px;
+    padding:0;box-shadow:0 18px 50px rgba(0,0,0,.5);overflow:hidden}
+  .screen{position:relative;width:100%;aspect-ratio:1072/1448;background:var(--paper);
+    color:var(--ink);overflow:hidden;user-select:none}
+  .statusbar{position:absolute;top:0;left:0;right:0;height:5.5%;display:flex;
+    align-items:center;justify-content:space-between;padding:0 3.2%;
+    font-size:clamp(8px,1.55vw,15px);font-weight:600;border-bottom:1px solid #c9c6bd;z-index:5}
+  .statusbar .r{font-weight:400;color:#555}
+  .avatar-slot{position:absolute;top:5.5%;bottom:0;left:0;width:52%;overflow:hidden;z-index:2}
+  .avatar-slot img{position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+    height:100%;width:auto;max-width:none;object-fit:contain;object-position:bottom}
+  .avatar-tag{position:absolute;top:8px;left:8px;background:rgba(26,26,26,.82);color:#fff;
+    font-size:clamp(6px,1.1vw,10px);padding:3px 7px;border-radius:10px;z-index:3}
+  .task-slot{position:absolute;top:5.5%;bottom:0;left:51%;right:0;padding:4.5% 2.6%;
+    border-left:1px solid #d6d3ca;z-index:2;display:flex;flex-direction:column;gap:3.4%}
+  .greet{font-size:clamp(11px,2.5vw,25px);font-weight:700;line-height:1.2}
+  .greet .date{display:block;font-size:clamp(7px,1.4vw,13px);font-weight:400;color:#777;margin-top:2px}
+  .bubble{background:#fff;border:1.5px solid #1a1a1a;border-radius:10px;
+    padding:3.2% 4%;font-size:clamp(8px,1.7vw,16px);position:relative;min-height:12%}
+  .bubble::before{content:"";position:absolute;left:14px;top:-9px;width:14px;height:14px;
+    background:#fff;border-left:1.5px solid #1a1a1a;border-top:1.5px solid #1a1a1a;
+    transform:rotate(45deg)}
+  .sec-label{font-size:clamp(7px,1.35vw,13px);font-weight:700;color:#666;
+    letter-spacing:2px;border-bottom:1px solid #c9c6bd;padding-bottom:4px}
+  .task{display:flex;gap:3%;align-items:flex-start;font-size:clamp(8px,1.7vw,16px);
+    padding:2% 0;border-bottom:1px dashed #d0cdc4;cursor:pointer;transition:opacity .15s}
+  .task:last-child{border-bottom:none}
+  .task .mk{font-weight:700;flex:0 0 auto;width:1.4em}
+  .task .tx{flex:1}
+  .task .due{color:#888;font-size:.82em;display:block;margin-top:2px}
+  .task.done .tx{text-decoration:line-through;color:#999}
+  .task.doing .mk{color:#b4472f}
+  .task.done .mk{color:#2f7a4d}
+  .progress{margin-top:auto;border-top:2px solid #1a1a1a;padding-top:3%}
+  .progress .lab{display:flex;justify-content:space-between;font-size:clamp(7px,1.4vw,13px);font-weight:700}
+  .bar{height:clamp(7px,1.5vw,14px);border:1.5px solid #1a1a1a;margin-top:6px;background:#fff}
+  .bar>i{display:block;height:100%;background:#1a1a1a;width:0%;transition:width .35s}
+
+  /* dirty rectangle overlay — the whole point of the demo */
+  .dirty-layer{position:absolute;inset:0;pointer-events:none;z-index:4;opacity:0}
+  .dirty-layer.flash{animation:df .9s ease-out}
+  .dirty-layer .fill{position:absolute;left:51%;right:0;top:5.5%;bottom:0;
+    background:rgba(224,95,107,.22);border:2px dashed var(--dirty)}
+  .dirty-layer .lbl{position:absolute;left:53%;top:7%;background:var(--dirty);color:#fff;
+    font-size:clamp(6px,1.1vw,10px);padding:2px 6px;border-radius:4px}
+  .dirty-layer.still .fill,.dirty-layer.still .lbl{display:none}
+  @keyframes df{0%{opacity:0}15%{opacity:1}70%{opacity:1}100%{opacity:0}}
+  .avatar-frozen{position:absolute;left:1%;bottom:2%;z-index:6;background:rgba(47,122,77,.92);
+    color:#fff;font-size:clamp(6px,1.05vw,10px);padding:3px 7px;border-radius:10px}
+
+  /* side panel */
+  .side h2{font-size:15px;font-weight:600;margin:0 0 12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin-bottom:14px}
+  .card h3{font-size:12px;font-weight:600;color:var(--accent);margin:0 0 10px;
+    text-transform:uppercase;letter-spacing:1px}
+  .btnrow{display:flex;flex-wrap:wrap;gap:8px}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+    border-radius:8px;padding:8px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);color:#0e0e10;border-color:var(--accent);font-weight:600}
+  button.primary:hover{opacity:.88;color:#0e0e10}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .stat{background:var(--panel2);border-radius:8px;padding:10px 12px}
+  .stat .v{font-size:19px;font-weight:600;color:var(--accent2)}
+  .stat .k{font-size:11px;color:var(--muted);margin-top:2px}
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+    background:#111;border-radius:8px;padding:10px;max-height:150px;overflow:auto;
+    color:#b8c0cc;white-space:pre-wrap;line-height:1.7}
+  .log .hi{color:var(--warn)}
+  .note{font-size:12px;color:var(--muted)}
+  .note b{color:var(--txt);font-weight:600}
+  .flow{font-size:12px;color:var(--muted);line-height:1.9}
+  .flow code{background:var(--panel2);color:var(--accent2);padding:1px 5px;border-radius:4px;font-size:11px}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);cursor:pointer}
+  .toggle input{accent-color:var(--accent)}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>讯飞 C1 · 桌面助理屏保原型 <span style="color:var(--accent);font-size:13px;font-weight:400">局部刷新演示</span></h1>
+  <div class="sub">1072×1448 彩色 E Ink · 立绘一次全刷常驻 · 任务区 DU|RECT 真局部刷新 · 借鉴 ai-desk-card 的 widget/diff 架构</div>
+
+  <div class="cols">
+    <!-- DEVICE -->
+    <div>
+      <div class="device">
+        <div class="screen" id="screen">
+          <div class="statusbar">
+            <span id="clock">11月18日 09:36 周三</span>
+            <span class="r">100% · Wi-Fi</span>
+          </div>
+          <div class="avatar-slot" onclick="blink()" title="点击眨眼">
+            <img id="avatarImg" src="assets/assistant.png" alt="助理立绘">
+            <img id="eyeLayer" src="assets/eyes_open.png" alt="" style="position:absolute;z-index:1;pointer-events:none">
+            <div class="avatar-tag">立绘 · 彩色常驻 · 点击眨眼</div>
+          </div>
+          <div class="task-slot" id="taskSlot">
+            <div class="greet">早上好，苏苏<span class="date" id="dateLine">今天有 3 件事在等你</span></div>
+            <div class="bubble" id="bubble">今天节奏不错，我们一件一件来。</div>
+            <div class="sec-label">今日待办 · TASK</div>
+            <div id="taskList"></div>
+            <div class="progress">
+              <div class="lab"><span>今日进展</span><span id="pctText">0 / 4</span></div>
+              <div class="bar"><i id="pbar"></i></div>
+            </div>
+          </div>
+          <div class="dirty-layer" id="dirty">
+            <div class="fill"></div><div class="lbl">DU|RECT 脏矩形 · 仅此区重驱</div>
+          </div>
+          <div class="avatar-frozen">此区不重驱</div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--accent2)"></i>立绘区：0 次重刷</span>
+        <span><i style="background:var(--dirty)"></i>任务区：每次仅此重驱</span>
+      </div>
+    </div>
+
+    <!-- SIDE -->
+    <div class="side">
+      <div class="card">
+        <h3>交互验证</h3>
+        <div class="btnrow">
+          <button class="primary" onclick="advance()">推进一项任务 →</button>
+          <button onclick="reset()">重置</button>
+          <label class="toggle"><input type="checkbox" id="showDirty" checked> 高亮脏矩形</label>
+        </div>
+        <p class="note" style="margin:12px 0 0">点「推进一项任务」，观察：<b>左侧立绘纹丝不动</b>，红色脏矩形只覆盖右侧任务区——这就是省电的关键。</p>
+      </div>
+
+      <div class="card">
+        <h3>本次刷新统计</h3>
+        <div class="stats">
+          <div class="stat"><div class="v" id="sRegion">0.0%</div><div class="k">脏矩形占全屏</div></div>
+          <div class="stat"><div class="v" id="sBytes">0 KB</div><div class="k">传输量(4bpp)</div></div>
+          <div class="stat"><div class="v" id="sCount">0</div><div class="k">局刷次数</div></div>
+          <div class="stat"><div class="v" id="sSaved">0%</div><div class="k">较全刷节省</div></div>
+        </div>
+        <p class="note" style="margin:12px 0 0">全屏 4bpp = <b>758 KB</b>（1072×1448÷2）。任务区约 <b>58%×94.5% ≈ 55%</b>，但 DU 差分只重驱真正变化的像素，通常远小于整块。</p>
+      </div>
+
+      <div class="card">
+        <h3>刷新日志（模拟 daemon）</h3>
+        <div class="log" id="log">[ready] 首帧 GL16 全刷：立绘 + 任务面板一次上屏
+[diff] 基线帧已缓存，等待 widget 变化…</div>
+      </div>
+
+      <div class="card">
+        <h3>为什么这样设计</h3>
+        <div class="flow">
+          ① <b>立绘常驻</b>：彩色层刷新慢、残影重 → 只在开机用 <code>GL16</code> 画一次，之后永不重绘，断电画面还留着。<br>
+          ② <b>任务局刷</b>：文字走 <code>DU|RECT</code> 真局部 + 每帧清白底（复用你项目里调透的策略），没变的像素不驱 → 立绘区 <code>max=0</code> 不跳。<br>
+          ③ <b>差分开窗</b>：借鉴 ai-desk-card 的 <code>_compute_diff</code>——前后帧比对得脏矩形，只推变化块；状态栏时钟那类"老爱变"的元素固定住，否则脏矩形被拉成大整块。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TASKS = [
+  {text:"审阅 Q4 架构方案", due:"今天 14:00", tag:"doing"},
+  {text:"回复设计评审意见", due:"今天 17:30", tag:"today"},
+  {text:"整理墨水屏调研笔记", due:"本周", tag:"later"},
+  {text:"预约周五的体检", due:"本周五", tag:"later"},
+];
+const MARKS = {doing:"▶", today:"□", later:"□", done:"✓"};
+const BUBBLES = [
+  "今天节奏不错，我们一件一件来。",
+  "很好，第一件搞定了，继续保持。",
+  "进展顺利！剩下几件也不难。",
+  "快收尾了，最后一项加把劲。",
+  "全部完成，今天辛苦了，早点休息。"
+];
+let state = TASKS.map((t,i)=>({...t, done:false}));
+let count = 0;
+
+function render(){
+  const list = document.getElementById('taskList');
+  list.innerHTML = state.map(t=>{
+    const cls = t.done?'done':(t.tag==='doing'?'doing':'');
+    return `<div class="task ${cls}"><span class="mk">${t.done?'✓':MARKS[t.tag]}</span>
+      <span class="tx">${t.text}<span class="due">${t.due}</span></span></div>`;
+  }).join('');
+  const done = state.filter(t=>t.done).length;
+  document.getElementById('pctText').textContent = `${done} / ${state.length}`;
+  document.getElementById('pbar').style.width = (done/state.length*100)+'%';
+  document.getElementById('dateLine').textContent =
+    done===state.length ? '今天的事都处理完啦' : `还有 ${state.length-done} 件事在等你`;
+  document.getElementById('bubble').textContent = hintText(done, state.length);
+}
+
+function hintText(done, total){
+  if(total===0) return '轻点右侧任务即可标记为完成 →';
+  if(done===0)  return '点击右侧任务，一件一件慢慢来 →';
+  if(done>=total) return '今天都完成了，早点休息吧 ✓';
+  return `很好，已完成 ${done}/${total}，继续加油 →`;
+}
+
+function flashDirty(){
+  const d = document.getElementById('dirty');
+  if(!document.getElementById('showDirty').checked) return;
+  d.classList.remove('still','flash'); void d.offsetWidth;
+  d.classList.add('flash');
+}
+
+function logPush(done){
+  const el = document.getElementById('log');
+  const pct = (55 - done*3.2).toFixed(1);
+  const kb = Math.round(758*pct/100);
+  const tag = done===0?'GL16':'DU|RECT';
+  el.innerHTML += `\n[diff] bbox=(451,80 621×1366) → region ${pct}% < 50%? 局部\n[push] mode=${tag} ${kb}KB  fid=${++count}  → 立绘区未入脏矩形`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function advance(){
+  const idx = state.findIndex(t=>!t.done);
+  if(idx<0) return;
+  state[idx].done = true;
+  const done = state.filter(t=>t.done).length;
+  render();
+  flashDirty();
+  document.getElementById('sRegion').textContent = (55-done*3.2).toFixed(1)+'%';
+  document.getElementById('sBytes').textContent = Math.round(758*(55-done*3.2)/100)+' KB';
+  document.getElementById('sCount').textContent = ++count;
+  document.getElementById('sSaved').textContent = (100-(55-done*3.2)).toFixed(0)+'%';
+  logPush(done);
+}
+
+function reset(){
+  state = TASKS.map((t,i)=>({...t, done:false})); count=0;
+  render();
+  document.getElementById('sRegion').textContent='0.0%';
+  document.getElementById('sBytes').textContent='0 KB';
+  document.getElementById('sCount').textContent='0';
+  document.getElementById('sSaved').textContent='0%';
+  document.getElementById('log').innerHTML='[ready] 首帧 GL16 全刷：立绘 + 任务面板一次上屏\n[diff] 基线帧已缓存，等待 widget 变化…';
+}
+
+// clock
+function tick(){
+  const d=new Date();
+  const wd=['日','一','二','三','四','五','六'][d.getDay()];
+  document.getElementById('clock').textContent=`${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')} 周${wd}`;
+}
+tick(); setInterval(tick,30000);
+render();
+
+/* 眨眼层：和 APK 用同一套 fitEnd 坐标算法（素材 750×1490，眼睛框 355,170,160×70） */
+function layoutEye(){
+  const slot=document.querySelector('.avatar-slot');
+  const img=document.getElementById('avatarImg');
+  const eye=document.getElementById('eyeLayer');
+  const W=slot.clientWidth, H=slot.clientHeight;
+  const scale=Math.min(W/750, H/1490);
+  const dw=750*scale, dh=1490*scale;
+  const offX=(W-dw)/2, offY=H-dh;                 // fitEnd: 水平居中 + 贴底
+  eye.style.left=(offX+355*scale)+'px';
+  eye.style.top=(offY+170*scale)+'px';
+  eye.style.width=(160*scale)+'px';
+  eye.style.height=(70*scale)+'px';
+}
+window.addEventListener('load', layoutEye);
+window.addEventListener('resize', layoutEye);
+function blink(){
+  const eye=document.getElementById('eyeLayer');
+  eye.src='assets/eyes_closed.png';
+  setTimeout(()=>{ eye.src='assets/eyes_open.png'; }, 140);
+}
+setInterval(()=>{ if(Math.random()>0.4) blink(); }, 7000);  // 低频随机眨眼
+</script>
+</body>
+</html>
